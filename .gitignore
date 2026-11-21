@@ -1,0 +1,12 @@
+﻿.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.vscode/
+reporte_prueba.xlsx
+reporte_prueba.pdf
+MBP-BAL-*.xlsx
+MBP-BAL-*.pdf

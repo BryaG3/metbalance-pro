@@ -1,0 +1,12 @@
+PySide6
+numpy
+scipy
+pandas
+pydantic>=2.0
+matplotlib
+openpyxl
+reportlab
+pillow
+pytest
+pytest-qt
+platformdirs

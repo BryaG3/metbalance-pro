@@ -134,17 +134,25 @@ _NON_MET_PATTERNS = (
     re.compile(r"(?:^|[^a-z0-9])(tonelaje_?molino|solidos_?%|%_?solidos|pct_?solidos|work_?index)(?:$|[^a-z0-9])"),
 )
 
+_RECOVERY_PREFIXES = ("rec_", "recup", "recovery")
+_RECOVERY_FIRST_TOKENS = frozenset({"rec", "recup", "recuperacion", "recovery"})
+_RECOVERY_ANY_TOKENS = frozenset({"recup", "recuperacion", "recovery"})
+
 _MASS_KEYWORDS = frozenset(
     {
         "tms",
         "tph",
         "tpd",
+        "tmh",
+        "tmd",
         "flow",
         "flujo",
         "masa",
         "mass",
         "ton",
+        "tons",
         "tonelaje",
+        "toneladas",
         "tonnage",
         "caudal",
         "rate",
@@ -396,9 +404,15 @@ def _is_period_or_timestamp_header(col: str) -> tuple[bool, bool]:
 
 
 def _is_non_metallurgical_header(col: str, circuit: CircuitSpec) -> bool:
-    """Detect operational milling/grinding/flotation utility columns."""
-    norm = _strip_accents(col)
+    """Detect operational milling/grinding/flotation utility or recovery columns."""
+    norm = _strip_accents(col).strip()
     tokens = _tokenize_ascii(col)
+    if (
+        norm.startswith(_RECOVERY_PREFIXES)
+        or (tokens and tokens[0] in _RECOVERY_FIRST_TOKENS)
+        or any(tok in _RECOVERY_ANY_TOKENS for tok in tokens)
+    ):
+        return True
     if any(pat.search(norm) for pat in _NON_MET_PATTERNS):
         return True
 
@@ -654,10 +668,10 @@ def _suggest_column_mapping(
             False,
         )
 
-    # Case 2: Stream + mass flow keyword or no species / grade unit -> mass flow
+    # Case 2: Stream + explicit mass flow keyword or mass unit -> mass flow
     if stream is not None and species is None:
-        if has_mass_kw or is_mass_unit or not is_grade_unit:
-            conf = min(0.98, round(stream_score * (0.98 if has_mass_kw or is_mass_unit else 0.85), 3))
+        if has_mass_kw or is_mass_unit:
+            conf = min(0.98, round(stream_score * 0.98, 3))
             return (
                 ColumnMappingSuggestion(
                     source_column=col,
@@ -670,8 +684,9 @@ def _suggest_column_mapping(
                 ),
                 False,
             )
-        # Grade unit on concentrate stream like "ConCu_%" -> infer species from stream name
-        if is_grade_unit and stream.role == StreamRole.CONCENTRATE:
+        # Grade unit on concentrate stream like "ConCu_%" (with no unconsumed element tokens)
+        remaining_tokens = [tok for idx, tok in enumerate(tokens) if idx not in consumed]
+        if is_grade_unit and not remaining_tokens and stream.role == StreamRole.CONCENTRATE:
             s_norm = _strip_accents(stream.id)
             for sp in circuit.species:
                 if _strip_accents(sp.id) in s_norm:
@@ -935,6 +950,21 @@ def profile_file(
                         suggested_action="Keep as unmeasured, drop row, or interpolate",
                     )
                 )
+                if sug.is_mass_flow:
+                    anomalies.append(
+                        AnomalyRecord(
+                            row_index=row_idx,
+                            column=col,
+                            raw_value=raw_val,
+                            anomaly_type="ZERO_OR_NEGATIVE_FLOW",
+                            severity="error",
+                            detail=(
+                                f"Missing/NaN mass flow at row {row_idx + 1} in column '{col}' "
+                                "(possible non-operational shift or unmeasured tonnage)."
+                            ),
+                            suggested_action="Omit non-operational shift before reconciliation",
+                        )
+                    )
                 continue
 
             parsed_val, is_dec_comma = _parse_numeric_cell(raw_val)
@@ -961,6 +991,23 @@ def profile_file(
                         severity="error",
                         detail=f"Non-numeric value '{raw_val}' at row {row_idx + 1} in column '{col}'.",
                         suggested_action="Coerce corrupt text to NaN/unmeasured",
+                    )
+                )
+                continue
+
+            if sug.is_mass_flow and parsed_val <= 0.0:
+                anomalies.append(
+                    AnomalyRecord(
+                        row_index=row_idx,
+                        column=col,
+                        raw_value=raw_val,
+                        anomaly_type="ZERO_OR_NEGATIVE_FLOW",
+                        severity="error",
+                        detail=(
+                            f"Zero or negative mass flow ({parsed_val:g}) at row {row_idx + 1} "
+                            f"in column '{col}' (non-operational shift)."
+                        ),
+                        suggested_action="Omit non-operational shift before reconciliation",
                     )
                 )
                 continue
@@ -1012,17 +1059,20 @@ def profile_file(
 
 def build_default_cleaning_plan(profile: DataProfileReport) -> CleaningPlan:
     """Create an unconfirmed CleaningPlan initialized from a DataProfileReport."""
-    return CleaningPlan(
-        mappings=[m.model_copy(deep=True) for m in profile.mapping_suggestions],
-        fix_decimal_commas=True,
-        coerce_corrupt_text_to_nan=True,
-        nullify_negative=True,
-        nullify_out_of_range=True,
-        convert_units=True,
-        drop_non_metallurgical=True,
-        missing_strategy="keep_as_unmeasured",
-        confirmed=False,
-    )
+    plan_kwargs: dict[str, Any] = {
+        "mappings": [m.model_copy(deep=True) for m in profile.mapping_suggestions],
+        "fix_decimal_commas": True,
+        "coerce_corrupt_text_to_nan": True,
+        "nullify_negative": True,
+        "nullify_out_of_range": True,
+        "convert_units": True,
+        "drop_non_metallurgical": True,
+        "missing_strategy": "keep_as_unmeasured",
+        "confirmed": False,
+    }
+    if "drop_zero_or_negative_flow" in CleaningPlan.model_fields:
+        plan_kwargs["drop_zero_or_negative_flow"] = True
+    return CleaningPlan(**plan_kwargs)
 
 
 def _format_period_id(val: Any, row_idx: int) -> str:
@@ -1073,7 +1123,8 @@ def apply_cleaning_plan(
     df = raw_df.copy(deep=True)
     audit_log: list[AuditLogEntry] = []
 
-    stream_ids = {s.id for s in circuit.streams}
+    stream_by_id = {s.id: s for s in circuit.streams}
+    stream_ids = set(stream_by_id.keys())
     species_by_id = {sp.id: sp for sp in circuit.species}
 
     # Locate period ID and timestamp columns from unmapped metadata columns.
@@ -1121,6 +1172,7 @@ def apply_cleaning_plan(
     ]
 
     cleaned_series: dict[str, pd.Series] = {}
+    zero_or_neg_flow_rows: set[Any] = set()
     for mapping in active_mappings:
         col = mapping.source_column
         if mapping.target_stream_id not in stream_ids:
@@ -1145,7 +1197,7 @@ def apply_cleaning_plan(
         max_grade = _max_physical_grade(effective_grade_unit) if not mapping.is_mass_flow else None
 
         numeric_vals: list[float] = []
-        for val in raw_values:
+        for orig_idx, val in zip(df.index, raw_values):
             if _is_missing_cell(val):
                 numeric_vals.append(float("nan"))
                 continue
@@ -1167,6 +1219,9 @@ def apply_cleaning_plan(
                 raise ValueError(
                     f"Cannot parse non-numeric value {val!r} in column '{col}' while coerce_corrupt_text_to_nan is False."
                 )
+
+            if mapping.is_mass_flow and parsed_val <= 0.0:
+                zero_or_neg_flow_rows.add(orig_idx)
 
             if parsed_val < 0.0:
                 if plan.nullify_negative:
@@ -1287,14 +1342,53 @@ def apply_cleaning_plan(
 
         cleaned_series[col] = series
 
-    # 4. Missing data strategy across mapped columns.
+    # 3b. Drop non-operational shifts (zero/negative mass flow or missing feed flow) if enabled.
     surviving_indices = list(df.index)
-    if active_mappings:
-        mapped_frame = pd.DataFrame(cleaned_series, index=df.index)
+    if active_mappings and getattr(plan, "drop_zero_or_negative_flow", True):
+        feed_mass_cols = [
+            m.source_column
+            for m in active_mappings
+            if m.is_mass_flow
+            and m.target_stream_id in stream_by_id
+            and stream_by_id[m.target_stream_id].role == StreamRole.FEED
+        ]
+        if feed_mass_cols:
+            for orig_idx in df.index:
+                if all(
+                    pd.isna(cleaned_series[col].loc[orig_idx])
+                    or float(cleaned_series[col].loc[orig_idx]) <= 0.0
+                    for col in feed_mass_cols
+                ):
+                    zero_or_neg_flow_rows.add(orig_idx)
+
+        if zero_or_neg_flow_rows:
+            surviving_indices = [idx for idx in df.index if idx not in zero_or_neg_flow_rows]
+            dropped_zero_flow = len(df.index) - len(surviving_indices)
+            cleaned_series = {
+                col: series.loc[surviving_indices] for col, series in cleaned_series.items()
+            }
+            audit_log.append(
+                AuditLogEntry(
+                    timestamp_iso=_utc_now_iso(),
+                    action="drop_zero_or_negative_flow",
+                    column=None,
+                    affected_rows=dropped_zero_flow,
+                    detail=(
+                        f"Omitted {dropped_zero_flow} non-operational shift(s) with zero, "
+                        "negative, or missing feed mass flow."
+                    ),
+                )
+            )
+
+    # 4. Missing data strategy across mapped columns.
+    if active_mappings and surviving_indices:
+        mapped_frame = pd.DataFrame(cleaned_series, index=surviving_indices)
         if plan.missing_strategy == "drop_row":
             complete_mask = mapped_frame.notna().all(axis=1)
             dropped_count = int((~complete_mask).sum())
-            surviving_indices = [idx for idx, keep in zip(df.index, complete_mask.tolist()) if keep]
+            surviving_indices = [
+                idx for idx, keep in zip(surviving_indices, complete_mask.tolist()) if keep
+            ]
             if dropped_count > 0:
                 audit_log.append(
                     AuditLogEntry(

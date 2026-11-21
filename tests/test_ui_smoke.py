@@ -33,7 +33,14 @@ from app.main import main as app_main
 from app.settings_manager import SettingsManager
 from app.ui.flowsheet_canvas import CanvasBlockKind
 from app.ui.main_window import MainToolBar, MainWindow
-from app.ui.ui_common import ICONS_DIR, build_palette, load_stylesheet, load_svg_icon, ui_font
+from app.ui.ui_common import (
+    ICONS_DIR,
+    TableInspectorDialog,
+    build_palette,
+    load_stylesheet,
+    load_svg_icon,
+    ui_font,
+)
 from core.models import StepStatus, StreamRole
 from core.topology import build_incidence_matrix, get_circuit_template
 
@@ -1035,5 +1042,109 @@ def test_contextual_inspector_no_widget_overlaps_across_widths(qtbot, tmp_path: 
         _assert_no_overlaps_or_clipped_buttons("stage", target_w)
 
     assert win.close() is True
+
+
+def test_table_inspector_dialog_filter_copy_and_expand_buttons(qtbot, tmp_path: Path) -> None:
+    """Verify TableInspectorDialog cloning/filtering/TSV copy/palettes and expand buttons in ES & EN."""
+    settings = _isolated_settings(tmp_path, "table_inspector.ini")
+    win = MainWindow(settings_manager=settings)
+    qtbot.addWidget(win)
+    win.show()
+    QApplication.processEvents()
+
+    # 1. Verify expand-table buttons exist across Step 02, 04, 05, 06 with ES labels
+    expand_buttons = [
+        win.step_02_view.expand_anomalies_btn,
+        win.step_02_view.expand_mapping_btn,
+        win.step_04_view.expand_obs_btn,
+        win.step_04_view.expand_nodal_btn,
+        win.step_05_view.expand_adjustments_btn,
+        win.step_05_view.expand_batch_btn,
+        win.step_06_view.expand_kpi_btn,
+    ]
+    for btn in expand_buttons:
+        assert isinstance(btn, QPushButton)
+        assert btn.text() == "Expandir Tabla"
+    assert win.step_02_view.chk_drop_zero_flow.isChecked() is True
+    assert "flujo" in win.step_02_view.chk_drop_zero_flow.text().lower()
+
+    # Verify table headers are sized to fit their full header text (no clipping)
+    for table in (
+        win.step_02_view.anomalies_table,
+        win.step_02_view.mapping_table,
+        win.step_04_view.nodal_table,
+        win.step_06_view.kpi_table,
+    ):
+        fm = QFontMetrics(table.horizontalHeader().font())
+        for c in range(table.columnCount()):
+            h_item = table.horizontalHeaderItem(c)
+            if h_item is not None and h_item.text():
+                assert table.columnWidth(c) >= fm.horizontalAdvance(h_item.text()) + 20
+
+    # 2. Open TableInspectorDialog on populated species_table (contains embedded QComboBox)
+    src_table = win.step_01_view.species_table
+    assert src_table.rowCount() >= 4
+    dlg_light = TableInspectorDialog(src_table, "Especies", theme="light", parent=win)
+    qtbot.addWidget(dlg_light)
+    dlg_light.show()
+    QApplication.processEvents()
+
+    assert dlg_light.width() >= 720 and dlg_light.height() >= 420
+    assert "Especies" in dlg_light.windowTitle()
+    assert dlg_light.table.rowCount() == src_table.rowCount()
+    assert dlg_light.table.columnCount() == src_table.columnCount()
+    for c in range(src_table.columnCount()):
+        assert (
+            dlg_light.table.horizontalHeaderItem(c).text()
+            == src_table.horizontalHeaderItem(c).text()
+        )
+    # Embedded QComboBox value in column 2 must be cloned as text
+    first_unit_combo = src_table.cellWidget(0, 2)
+    assert isinstance(first_unit_combo, QComboBox)
+    assert dlg_light.table.item(0, 2).text() == first_unit_combo.currentText()
+
+    # Light palette check
+    assert dlg_light.palette().color(QPalette.ColorRole.Window).lightness() > 210
+    assert dlg_light.palette().color(QPalette.ColorRole.WindowText).lightness() < 80
+
+    # Live filter by species token "Cu"
+    dlg_light.filter_edit.setText("Cu")
+    QApplication.processEvents()
+    visible_rows = [
+        r for r in range(dlg_light.table.rowCount()) if not dlg_light.table.isRowHidden(r)
+    ]
+    assert len(visible_rows) == 1
+    assert dlg_light.row_count_label.text() == f"1 de {src_table.rowCount()} filas"
+
+    # Copy filtered rows to clipboard as TSV
+    tsv = dlg_light.copy_to_clipboard_tsv()
+    tsv_lines = tsv.splitlines()
+    assert len(tsv_lines) == 2  # header + 1 visible row
+    assert "\t" in tsv_lines[0]
+    assert "Cu" in tsv_lines[1]
+    assert QApplication.clipboard().text() == tsv
+    assert "1" in dlg_light.status_label.text()
+
+    # Clear filter restores all rows
+    dlg_light.filter_edit.setText("")
+    QApplication.processEvents()
+    assert all(not dlg_light.table.isRowHidden(r) for r in range(dlg_light.table.rowCount()))
+    dlg_light.close()
+
+    # 3. Dark theme palette check + EN language switching on expand buttons
+    win.set_language("en")
+    for btn in expand_buttons:
+        assert btn.text() == "Expand Table"
+    assert "mass flow" in win.step_02_view.chk_drop_zero_flow.text().lower()
+
+    dlg_dark = TableInspectorDialog(src_table, "Species", theme="dark", parent=win)
+    qtbot.addWidget(dlg_dark)
+    assert "Expanded Table Viewer" in dlg_dark.windowTitle()
+    assert dlg_dark.palette().color(QPalette.ColorRole.Window).lightness() < 50
+    assert dlg_dark.palette().color(QPalette.ColorRole.WindowText).lightness() > 200
+    dlg_dark.close()
+
+    assert win.close() is True
+
 
 

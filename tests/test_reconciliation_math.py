@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -19,11 +20,13 @@ from core.models import (
     make_assay_var_key,
     make_mass_var_key,
 )
+from core.observability import analyze_observability
 from core.reconciliation import (
     compare_with_without_outlier,
     reconcile_batch,
     reconcile_period,
 )
+from core.statistics_ged import compute_ged_and_zscores
 from core.topology import build_incidence_matrix, get_circuit_template
 
 SAMPLE_DATA_DIR = Path(__file__).resolve().parents[1] / "app" / "assets" / "sample_data"
@@ -448,3 +451,145 @@ def test_batch_reconciliation_and_kpis() -> None:
         kpis.feed_mass_rec / batch.results[0].reconciled_mass_flows["Concentrate"],
         rel=1e-6,
     )
+
+
+def test_ged_zscore_stability_under_active_lower_bound() -> None:
+    """Active lower-bound stream (M_hat -> 0) keeps |z| finite and bounded by sqrt(J*)."""
+    circuit = get_circuit_template("concentrator_3prod")
+    uncertainty = build_amira_p754_presets(circuit)
+
+    # Case 1: End-to-end reconciliation where unmeasured ConCu is pushed onto its lower bound
+    # (Feed Cu < Tailings Cu forces ConCu mass flow toward zero).
+    point_lb = MeasurementPoint(
+        period_id="LB-END2END",
+        mass_flows={"Feed": 150.0, "ConCu": None, "ConZn": None, "Tailings": None},
+        assays={
+            "Feed": {"Cu": 0.08, "Zn": 3.40, "Ag": 48.0},
+            "ConCu": {"Cu": 26.0, "Zn": 1.80, "Ag": 680.0},
+            "ConZn": {"Cu": 0.65, "Zn": 52.0, "Ag": 180.0},
+            "Tailings": {"Cu": 0.12, "Zn": 0.35, "Ag": 38.0},
+        },
+    )
+    res_lb = reconcile_period(circuit, point_lb, uncertainty)
+    _assert_balance_closure(circuit, res_lb, tol=1e-8)
+
+    z_bound_e2e = math.sqrt(max(res_lb.ged.objective_j, 0.0))
+    assert math.isfinite(res_lb.ged.max_abs_z_value)
+    assert res_lb.ged.max_abs_z_value <= z_bound_e2e + 1e-9
+    for adj in res_lb.adjustments:
+        if adj.z_score is not None:
+            assert math.isfinite(adj.z_score)
+            assert abs(adj.z_score) <= z_bound_e2e + 1e-9
+
+    # Case 2: Direct compute_ged_and_zscores stress check with M_ConCu = 1e-7 (near-zero v_kk)
+    # and a modest objective J* = 14.5 (sqrt(J*) ~= 3.81) where unregularized |z| would explode.
+    obs = analyze_observability(circuit, point_lb)
+    rec_mass_near_zero = {
+        "Feed": 150.0,
+        "ConCu": 1e-7,
+        "ConZn": 9.0,
+        "Tailings": 141.0 - 1e-7,
+    }
+    rec_assays_frac = {
+        "Feed": {"Cu": 0.0008, "Zn": 0.0340, "Ag": 48e-6},
+        "ConCu": {"Cu": 0.2500, "Zn": 0.0170, "Ag": 640e-6},
+        "ConZn": {"Cu": 0.0065, "Zn": 0.5200, "Ag": 180e-6},
+        "Tailings": {"Cu": 0.0010, "Zn": 0.0035, "Ag": 38e-6},
+    }
+    objective_j = 14.5
+    ged, adjustments = compute_ged_and_zscores(
+        circuit=circuit,
+        point=point_lb,
+        uncertainty_model=uncertainty,
+        obs_report=obs,
+        rec_mass=rec_mass_near_zero,
+        rec_assays_frac=rec_assays_frac,
+        objective_j=objective_j,
+    )
+    z_bound_direct = math.sqrt(objective_j)
+    assert math.isfinite(ged.max_abs_z_value)
+    assert ged.max_abs_z_value <= z_bound_direct + 1e-9
+    for adj in adjustments:
+        if adj.z_score is not None:
+            assert math.isfinite(adj.z_score)
+            assert abs(adj.z_score) <= z_bound_direct + 1e-9
+
+
+def test_reconcile_batch_skips_no_flow_shift_and_excludes_from_mean_chi2() -> None:
+    """Zero-flow shift is marked SKIPPED_NO_FLOW / GEDVerdict.SKIPPED and excluded from mean_chi2."""
+    circuit = get_circuit_template("concentrator_2prod")
+    uncertainty = build_amira_p754_presets(circuit)
+
+    true_cu_t = (100.0 * 1.20 - 4.0 * 27.0) / 96.0
+    true_au_t = (100.0 * 1.00 - 4.0 * 20.0) / 96.0
+
+    valid_p1 = MeasurementPoint(
+        period_id="SHIFT-01",
+        mass_flows={"Feed": 100.8, "Concentrate": 4.0, "Tailings": 96.0},
+        assays={
+            "Feed": {"Cu": 1.21, "Au": 0.99},
+            "Concentrate": {"Cu": 27.0, "Au": 20.0},
+            "Tailings": {"Cu": true_cu_t, "Au": true_au_t},
+        },
+    )
+    no_flow_p2 = MeasurementPoint(
+        period_id="SHIFT-NOFLOW",
+        mass_flows={"Feed": 0.0, "Concentrate": None, "Tailings": None},
+        assays={
+            "Feed": {"Cu": 1.20, "Au": 1.00},
+            "Concentrate": {"Cu": 27.0, "Au": 20.0},
+            "Tailings": {"Cu": true_cu_t, "Au": true_au_t},
+        },
+    )
+    valid_p3 = MeasurementPoint(
+        period_id="SHIFT-03",
+        mass_flows={"Feed": 101.4, "Concentrate": 4.05, "Tailings": 95.8},
+        assays={
+            "Feed": {"Cu": 1.19, "Au": 1.01},
+            "Concentrate": {"Cu": 26.8, "Au": 20.2},
+            "Tailings": {"Cu": true_cu_t * 1.01, "Au": true_au_t * 0.99},
+        },
+    )
+
+    batch = reconcile_batch(circuit, [valid_p1, no_flow_p2, valid_p3], uncertainty)
+    assert len(batch.results) == 3
+    assert batch.summary_skipped_count == 1
+    assert (
+        batch.summary_pass_count
+        + batch.summary_warning_count
+        + batch.summary_fail_count
+        + batch.summary_skipped_count
+        == 3
+    )
+
+    res_valid_1, res_skipped, res_valid_3 = batch.results
+    assert res_valid_1.status == "OK"
+    assert res_valid_3.status == "OK"
+    _assert_balance_closure(circuit, res_valid_1, tol=1e-8)
+    _assert_balance_closure(circuit, res_valid_3, tol=1e-8)
+
+    assert res_skipped.period_id == "SHIFT-NOFLOW"
+    assert res_skipped.status == "SKIPPED_NO_FLOW"
+    assert res_skipped.converged is False
+    assert res_skipped.solver_used == "SKIPPED_NO_FLOW"
+    assert res_skipped.iterations == 0
+    assert res_skipped.adjustments == []
+    assert res_skipped.ged.verdict == GEDVerdict.SKIPPED
+    assert res_skipped.ged.objective_j == 0.0
+    assert res_skipped.ged.degrees_of_freedom == 0
+    assert res_skipped.ged.p_value == 1.0
+    assert all(v == 0.0 for v in res_skipped.reconciled_mass_flows.values())
+    assert all(
+        all(val == 0.0 for val in sp_map.values())
+        for sp_map in res_skipped.reconciled_assays.values()
+    )
+
+    expected_mean_chi2 = float(
+        np.mean([res_valid_1.ged.objective_j, res_valid_3.ged.objective_j])
+    )
+    assert batch.mean_chi2 == pytest.approx(expected_mean_chi2, rel=1e-9)
+
+    # All-skipped batch produces mean_chi2 == 0.0 cleanly (no NaN / empty mean warning)
+    all_skipped = reconcile_batch(circuit, [no_flow_p2], uncertainty)
+    assert all_skipped.summary_skipped_count == 1
+    assert all_skipped.mean_chi2 == 0.0

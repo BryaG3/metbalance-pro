@@ -95,6 +95,7 @@ class GEDVerdict(_StrEnum):
     PASS = "pass"
     WARNING = "warning"
     FAIL = "fail"
+    SKIPPED = "skipped"
 
 
 _GRADE_FRACTION_FACTORS: dict[GradeUnit, float] = {
@@ -258,6 +259,7 @@ class CleaningPlan(BaseModel):
     nullify_out_of_range: bool = True
     convert_units: bool = True
     drop_non_metallurgical: bool = True
+    drop_zero_or_negative_flow: bool = True
     missing_strategy: Literal["keep_as_unmeasured", "drop_row", "interpolate"] = "keep_as_unmeasured"
     confirmed: bool = False
 
@@ -371,6 +373,7 @@ class ReconciliationResult(BaseModel):
     adjustments: list[VariableAdjustment]
     ged: GEDReport
     excluded_outliers: list[str] = Field(default_factory=list)
+    status: str = "OK"
 
 
 class OutlierComparisonResult(BaseModel):
@@ -390,6 +393,7 @@ class BatchReconciliationResult(BaseModel):
     summary_pass_count: int
     summary_warning_count: int
     summary_fail_count: int
+    summary_skipped_count: int = 0
     mean_chi2: float
 
 

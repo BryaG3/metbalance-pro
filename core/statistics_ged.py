@@ -207,15 +207,21 @@ def compute_ged_and_zscores(
                 solved = np.linalg.pinv(s_r_cov, rcond=1e-15) @ rhs
             v_a_tilde = rhs.T @ solved
 
+            z_max = math.sqrt(max(float(objective_j), 0.0))
             for local_k, item in enumerate(meas_entries):
                 var_key = str(item["var_key"])
                 v_class = status_by_key[var_key].classification
                 if v_class == VariableClass.MEASURED_REDUNDANT:
                     col_norm = float(np.linalg.norm(r_indep_mat[:, local_k]))
                     v_kk = float(v_a_tilde[local_k, local_k])
-                    if col_norm > 1e-10 and v_kk > 1e-24:
+                    v_meas_kk = float(sigma_tilde_vec[local_k] ** 2)
+                    if col_norm > 1e-10 and v_meas_kk > 0.0:
+                        v_reg_kk = max(v_kk, 1e-6 * v_meas_kk)
                         diff_tilde = float(item["meas_tilde"]) - float(item["rec_tilde"])
-                        z_scores_by_key[var_key] = float(diff_tilde / math.sqrt(v_kk))
+                        z_val = float(diff_tilde / math.sqrt(v_reg_kk))
+                        if abs(z_val) > z_max:
+                            z_val = math.copysign(z_max, z_val) if z_max > 0.0 else 0.0
+                        z_scores_by_key[var_key] = z_val
                     else:
                         z_scores_by_key[var_key] = 0.0
                 else:

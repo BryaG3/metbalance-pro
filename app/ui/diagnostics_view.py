@@ -27,10 +27,13 @@ from core.observability import analyze_observability
 from .ui_common import (
     InspectorPayload,
     ProjectState,
+    TableInspectorDialog,
     apply_status_role,
+    autosize_table_headers,
     configure_dense_table,
     get_theme_palette,
     load_svg_icon,
+    make_expand_table_button,
     make_numeric_item,
     make_text_item,
     monospace_font,
@@ -143,6 +146,11 @@ class DiagnosticsView(QWidget):
 
         self.vars_group = QGroupBox(splitter)
         v_layout = QVBoxLayout(self.vars_group)
+        v_top = QHBoxLayout()
+        v_top.addStretch(1)
+        self.expand_obs_btn = make_expand_table_button(self.vars_group, self._theme)
+        v_top.addWidget(self.expand_obs_btn)
+        v_layout.addLayout(v_top)
         self.vars_table = QTableWidget(0, 5, self.vars_group)
         self.vars_table.setObjectName("ObservabilityVarsTable")
         configure_dense_table(self.vars_table, stretch_last=True, editable=False)
@@ -151,6 +159,11 @@ class DiagnosticsView(QWidget):
 
         self.nodal_group = QGroupBox(splitter)
         n_layout = QVBoxLayout(self.nodal_group)
+        n_top = QHBoxLayout()
+        n_top.addStretch(1)
+        self.expand_nodal_btn = make_expand_table_button(self.nodal_group, self._theme)
+        n_top.addWidget(self.expand_nodal_btn)
+        n_layout.addLayout(n_top)
         self.nodal_table = QTableWidget(0, 6, self.nodal_group)
         self.nodal_table.setObjectName("NodalImbalanceTable")
         configure_dense_table(self.nodal_table, stretch_last=True, editable=False)
@@ -174,8 +187,28 @@ class DiagnosticsView(QWidget):
         # Signals
         self.period_combo.currentIndexChanged.connect(self._on_period_changed)
         self.run_diagnostics_btn.clicked.connect(self.run_diagnostics)
+        self.expand_obs_btn.clicked.connect(self._on_expand_obs)
+        self.expand_nodal_btn.clicked.connect(self._on_expand_nodal)
         self.prev_btn.clicked.connect(self.prev_step_requested.emit)
         self.next_btn.clicked.connect(self._on_next_clicked)
+
+    def _on_expand_obs(self) -> None:
+        dlg = TableInspectorDialog(
+            self.vars_table,
+            self._i18n.t("step04.section_variables"),
+            theme=self._theme,
+            parent=self,
+        )
+        dlg.exec()
+
+    def _on_expand_nodal(self) -> None:
+        dlg = TableInspectorDialog(
+            self.nodal_table,
+            self._i18n.t("step04.section_nodal"),
+            theme=self._theme,
+            parent=self,
+        )
+        dlg.exec()
 
     def set_theme(self, theme: str) -> None:
         self._theme = theme
@@ -186,6 +219,9 @@ class DiagnosticsView(QWidget):
         self.run_diagnostics_btn.setIcon(
             load_svg_icon("matrix.svg", self._theme, color_override="#FFFFFF", size=16)
         )
+        expand_icon = load_svg_icon("reset_layout.svg", self._theme, size=14)
+        self.expand_obs_btn.setIcon(expand_icon)
+        self.expand_nodal_btn.setIcon(expand_icon)
 
     def retranslate_ui(self) -> None:
         self._syncing = True
@@ -224,11 +260,15 @@ class DiagnosticsView(QWidget):
 
             self.prev_btn.setText(self._i18n.t("workflow.nav.prev_step"))
             self.next_btn.setText(self._i18n.t("workflow.nav.next_step"))
+            self.expand_obs_btn.setText(self._i18n.t("common.expand_table"))
+            self.expand_nodal_btn.setText(self._i18n.t("common.expand_table"))
         finally:
             self._syncing = False
 
         self._update_icons()
         self._render_report()
+        autosize_table_headers(self.vars_table, stretch_last=True)
+        autosize_table_headers(self.nodal_table, stretch_last=True)
 
     def refresh_from_state(self) -> None:
         """Populate period combo from CleanedDataset and render current observability report."""
@@ -301,6 +341,8 @@ class DiagnosticsView(QWidget):
             self.hints_group.setVisible(False)
             self.vars_table.setRowCount(0)
             self.nodal_table.setRowCount(0)
+            autosize_table_headers(self.vars_table, stretch_last=True)
+            autosize_table_headers(self.nodal_table, stretch_last=True)
             self.next_btn.setEnabled(False)
             return
 
@@ -407,6 +449,8 @@ class DiagnosticsView(QWidget):
                     imb.relative_pct, fmt="{:+.2f}%", na_text=na_str, color_hex=rel_color
                 ),
             )
+        autosize_table_headers(self.vars_table, stretch_last=True)
+        autosize_table_headers(self.nodal_table, stretch_last=True)
 
     def _on_next_clicked(self) -> None:
         if self._state.observability_report is None:

@@ -12,6 +12,7 @@ from PySide6.QtGui import (
     QAction,
     QBrush,
     QColor,
+    QFontMetrics,
     QKeyEvent,
     QMouseEvent,
     QPainter,
@@ -247,7 +248,7 @@ class CanvasBlockItem(QGraphicsItem):
         return QRectF(-w / 2.0, -h / 2.0, w, h)
 
     def boundingRect(self) -> QRectF:
-        return self.card_rect().adjusted(-12.0, -14.0, 12.0, 12.0)
+        return self.card_rect().adjusted(-12.0, -26.0, 12.0, 12.0)
 
     def shape(self) -> QPainterPath:
         path = QPainterPath()
@@ -482,7 +483,6 @@ class CanvasBlockItem(QGraphicsItem):
         # 4 Hover anchor ports (N, S, E, W)
         show_ports = self._interactive and (
             self._hovered
-            or selected
             or self._drop_target_highlight
             or self._canvas.tool_mode == CanvasToolMode.CONNECT
             or self._canvas.is_dragging_port
@@ -499,6 +499,20 @@ class CanvasBlockItem(QGraphicsItem):
                 painter.drawEllipse(pt, rad, rad)
 
         painter.restore()
+
+    def _compute_pill_rect(self, rect: QRectF, fm: QFontMetrics) -> QRectF:
+        txt_w = fm.horizontalAdvance(self._badge_text)
+        pill_w = min(116.0, max(26.0, txt_w + 10.0))
+        pill_h = 15.0
+        return QRectF(rect.right() - pill_w - 4.0, rect.top() - pill_h - 7.0, pill_w, pill_h)
+
+    def status_pill_rect(self) -> Optional[QRectF]:
+        """Return local-space rect for the top-right status/flow pill, or None if dot-only."""
+        if not self._badge_text:
+            return None
+        return self._compute_pill_rect(
+            self.card_rect(), QFontMetrics(monospace_font(7.0, bold=True))
+        )
 
     def _paint_status_badge(
         self,
@@ -521,15 +535,14 @@ class CanvasBlockItem(QGraphicsItem):
         if self._badge_text:
             painter.setFont(monospace_font(7.0, bold=True))
             fm = painter.fontMetrics()
-            txt_w = fm.horizontalAdvance(self._badge_text)
-            pill_w = min(84.0, max(26.0, txt_w + 10.0))
-            pill_h = 15.0
-            pill_rect = QRectF(rect.right() - pill_w - 4.0, rect.top() - 7.0, pill_w, pill_h)
+            pill_rect = self._compute_pill_rect(rect, fm)
             painter.setPen(QPen(QColor(border_hex), 1.0))
             painter.setBrush(QBrush(QColor(bg_hex)))
             painter.drawRoundedRect(pill_rect, 7.5, 7.5)
             painter.setPen(QColor(fg_hex))
-            elided = fm.elidedText(self._badge_text, Qt.TextElideMode.ElideRight, int(pill_w - 6))
+            elided = fm.elidedText(
+                self._badge_text, Qt.TextElideMode.ElideRight, int(pill_rect.width() - 6)
+            )
             painter.drawText(pill_rect, int(Qt.AlignmentFlag.AlignCenter), elided)
         else:
             dot_rect = QRectF(rect.right() - 14.0, rect.top() + 7.0, 7.0, 7.0)
@@ -617,6 +630,7 @@ class CanvasStreamItem(QGraphicsPathItem):
         is_outlier: bool = False,
         mono_label: bool = False,
         vertical_mode: bool = False,
+        label_on_source_arm: bool = False,
     ) -> None:
         palette = get_theme_palette(self._canvas.theme)
         selected = self.isSelected()
@@ -666,14 +680,25 @@ class CanvasStreamItem(QGraphicsPathItem):
                 )
                 arrow_prev = start_pt
         elif abs(start_pt.y() - end_pt.y()) > 2.0:
-            mid_x = (start_pt.x() + end_pt.x()) / 2.0
-            p1 = QPointF(mid_x, start_pt.y())
-            p2 = QPointF(mid_x, end_pt.y())
-            path.lineTo(p1)
-            path.lineTo(p2)
-            path.lineTo(end_pt)
-            label_anchor = QPointF(mid_x, (start_pt.y() + end_pt.y()) / 2.0)
-            arrow_prev = p2
+            span_x = end_pt.x() - start_pt.x()
+            if label_on_source_arm:
+                mid_x = start_pt.x() + 0.70 * span_x
+                p1 = QPointF(mid_x, start_pt.y())
+                p2 = QPointF(mid_x, end_pt.y())
+                path.lineTo(p1)
+                path.lineTo(p2)
+                path.lineTo(end_pt)
+                label_anchor = QPointF((start_pt.x() + mid_x) / 2.0, start_pt.y())
+                arrow_prev = p2
+            else:
+                mid_x = start_pt.x() + 0.30 * span_x
+                p1 = QPointF(mid_x, start_pt.y())
+                p2 = QPointF(mid_x, end_pt.y())
+                path.lineTo(p1)
+                path.lineTo(p2)
+                path.lineTo(end_pt)
+                label_anchor = QPointF((mid_x + end_pt.x()) / 2.0, end_pt.y())
+                arrow_prev = p2
         else:
             path.lineTo(end_pt)
             label_anchor = QPointF(
@@ -1283,6 +1308,11 @@ class FlowsheetCanvas(QGraphicsView):
                 elif stream.from_node is not None and stream.to_node is None:
                     out_ext[stream.from_node].append(stream)
 
+            feed_dy_step = 145.0 if self._sankey_mode else 92.0
+            feed_x_offset = 320.0 if self._sankey_mode else 265.0
+            prod_dy_step = 155.0 if self._sankey_mode else 90.0
+            prod_x_offset = 360.0 if self._sankey_mode else 280.0
+
             # 3. Synthesize FEED terminal blocks on the left & connect arrows
             for to_nid, streams in in_ext.items():
                 proc_blk = self._block_items.get(to_nid)
@@ -1290,9 +1320,9 @@ class FlowsheetCanvas(QGraphicsView):
                 n_in = len(streams)
                 for idx, stream in enumerate(streams):
                     term_id = f"TERM_IN__{stream.id}"
-                    dy = (idx - (n_in - 1) / 2.0) * 92.0
+                    dy = (idx - (n_in - 1) / 2.0) * feed_dy_step
                     pos = self._terminal_positions.get(
-                        stream.id, QPointF(base_pos.x() - 265.0, base_pos.y() + dy)
+                        stream.id, QPointF(base_pos.x() - feed_x_offset, base_pos.y() + dy)
                     )
                     feed_blk = CanvasBlockItem(
                         block_id=term_id,
@@ -1319,9 +1349,9 @@ class FlowsheetCanvas(QGraphicsView):
                 n_out = len(streams)
                 for idx, stream in enumerate(streams):
                     term_id = f"TERM_OUT__{stream.id}"
-                    dy = (idx - (n_out - 1) / 2.0) * 90.0
+                    dy = (idx - (n_out - 1) / 2.0) * prod_dy_step
                     pos = self._terminal_positions.get(
-                        stream.id, QPointF(base_pos.x() + 280.0, base_pos.y() + dy)
+                        stream.id, QPointF(base_pos.x() + prod_x_offset, base_pos.y() + dy)
                     )
                     is_tail = stream.role == StreamRole.TAILINGS
                     prod_blk = CanvasBlockItem(
@@ -1367,7 +1397,8 @@ class FlowsheetCanvas(QGraphicsView):
         self._sankey_mode = result is not None
         self._reconciliation = result
         self.load_circuit(circuit, reconciliation=result)
-        self.zoom_fit()
+        self.auto_layout()
+        self.fit_to_view()
 
     # --- Programmatic Canvas Authoring API (with QUndoStack support) ---
 
@@ -1738,8 +1769,8 @@ class FlowsheetCanvas(QGraphicsView):
         for nid in node_ids:
             by_layer[layer[nid]].append(nid)
 
-        x_spacing = 270.0
-        y_spacing = 160.0
+        x_spacing = 320.0 if self._sankey_mode else 270.0
+        y_spacing = 210.0 if self._sankey_mode else 160.0
         for col, layer_nids in sorted(by_layer.items()):
             total_h = (len(layer_nids) - 1) * y_spacing
             start_y = 200.0 - total_h / 2.0
@@ -1760,19 +1791,24 @@ class FlowsheetCanvas(QGraphicsView):
                 elif src.kind == CanvasBlockKind.PROCESS and dst.kind == CanvasBlockKind.PRODUCT:
                     out_by_proc[src.block_id].append(s_item)
 
+        feed_dy_step = 145.0 if self._sankey_mode else 92.0
+        feed_x_offset = 320.0 if self._sankey_mode else 265.0
+        prod_dy_step = 155.0 if self._sankey_mode else 90.0
+        prod_x_offset = 360.0 if self._sankey_mode else 280.0
+
         for nid, items in in_by_proc.items():
             base = self._block_items[nid].pos()
             for idx, s_item in enumerate(items):
-                dy = (idx - (len(items) - 1) / 2.0) * 92.0
-                pos = QPointF(base.x() - 265.0, base.y() + dy)
+                dy = (idx - (len(items) - 1) / 2.0) * feed_dy_step
+                pos = QPointF(base.x() - feed_x_offset, base.y() + dy)
                 self._block_items[s_item.source_block_id].setPos(pos)
                 self._terminal_positions[s_item.stream_id] = pos
 
         for nid, items in out_by_proc.items():
             base = self._block_items[nid].pos()
             for idx, s_item in enumerate(items):
-                dy = (idx - (len(items) - 1) / 2.0) * 90.0
-                pos = QPointF(base.x() + 280.0, base.y() + dy)
+                dy = (idx - (len(items) - 1) / 2.0) * prod_dy_step
+                pos = QPointF(base.x() + prod_x_offset, base.y() + dy)
                 self._block_items[s_item.target_block_id].setPos(pos)
                 self._terminal_positions[s_item.stream_id] = pos
 
@@ -2667,10 +2703,12 @@ class FlowsheetCanvas(QGraphicsView):
                     dst_blk.pos().y() + in_dy,
                 )
                 if start_pt.x() >= end_pt.x() - 10.0:
+                    detour_margin = 105.0 if self._sankey_mode else 75.0
+                    detour_step = 90.0 if self._sankey_mode else 42.0
                     if feedback_idx % 2 == 0:
-                        detour_y = min_y - 75.0 - 42.0 * (feedback_idx // 2)
+                        detour_y = min_y - detour_margin - detour_step * (feedback_idx // 2)
                     else:
-                        detour_y = max_y + 75.0 + 42.0 * (feedback_idx // 2)
+                        detour_y = max_y + detour_margin + detour_step * (feedback_idx // 2)
                     feedback_idx += 1
 
             color_hex, base_width, pen_style, is_outlier = self._stream_visual_style(
@@ -2696,6 +2734,7 @@ class FlowsheetCanvas(QGraphicsView):
                 is_outlier=is_outlier,
                 mono_label=self._sankey_mode,
                 vertical_mode=vertical_mode,
+                label_on_source_arm=(len(in_list) > len(out_list)),
             )
 
 

@@ -11,10 +11,13 @@ from typing import Any, Optional
 
 import openpyxl
 from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.chart.legend import Legend
+from openpyxl.chart.series import SeriesLabel
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from PIL import Image as PILImage
 
 from app.i18n.manager import I18nManager
 from core.models import (
@@ -92,6 +95,8 @@ _BILINGUAL_LABELS: dict[str, dict[str, str]] = {
         "count_pass": "Aprobados (PASS)",
         "count_warn": "Advertencias (WARNING)",
         "count_fail": "Fallos (FAIL)",
+        "count_skipped": "Omitidos (Sin Flujo)",
+        "verdict_skipped": "Omitido (Sin Flujo)",
         "audit_title": "Registro Auditable de Limpieza ETL",
         "source_file": "Archivo Fuente",
         "raw_rows": "Filas Crudas",
@@ -109,6 +114,9 @@ _BILINGUAL_LABELS: dict[str, dict[str, str]] = {
         "no": "No",
         "chart_rec_title": "Recuperación Metalúrgica Reconciliada (%)",
         "chart_chi2_title": "Control Estadístico Chi-Cuadrado (J* vs. Crítico)",
+        "chart_x_stream_prod": "Corriente / Producto",
+        "chart_y_recovery": "Recuperación (%)",
+        "chart_y_chi2": "Estadístico J* (Chi2)",
         "feed_mass_rec": "Masa Alimentación Reconciliada",
     },
     "en": {
@@ -172,6 +180,8 @@ _BILINGUAL_LABELS: dict[str, dict[str, str]] = {
         "count_pass": "Passed (PASS)",
         "count_warn": "Warnings (WARNING)",
         "count_fail": "Fails (FAIL)",
+        "count_skipped": "Skipped (No Flow)",
+        "verdict_skipped": "Skipped (No Flow)",
         "audit_title": "Auditable ETL Cleaning Log",
         "source_file": "Source File",
         "raw_rows": "Raw Rows",
@@ -189,6 +199,9 @@ _BILINGUAL_LABELS: dict[str, dict[str, str]] = {
         "no": "No",
         "chart_rec_title": "Reconciled Metallurgical Recovery (%)",
         "chart_chi2_title": "Chi-Square Statistical Control Chart (J* vs. Critical)",
+        "chart_x_stream_prod": "Stream / Product",
+        "chart_y_recovery": "Recovery (%)",
+        "chart_y_chi2": "J* Statistic (Chi2)",
         "feed_mass_rec": "Reconciled Feed Mass",
     },
 }
@@ -230,20 +243,92 @@ def _header_styles(primary_hex: str) -> dict[str, Any]:
         "warn_font": Font(name="Segoe UI", size=9, bold=True, color="B45309"),
         "fail_fill": PatternFill("solid", fgColor="FEE2E2"),
         "fail_font": Font(name="Segoe UI", size=9, bold=True, color="B91C1C"),
+        "skip_fill": PatternFill("solid", fgColor="E2E8F0"),
+        "skip_font": Font(name="Segoe UI", size=9, bold=True, color="475569"),
         "border": _thin_border(),
     }
 
 
-def _apply_verdict_style(cell: Any, verdict: GEDVerdict, styles: dict[str, Any]) -> None:
-    if verdict == GEDVerdict.PASS:
+def _is_skipped_result(res: ReconciliationResult) -> bool:
+    """Return True if a reconciliation result was skipped due to zero/no flow."""
+    status = str(getattr(res, "status", "OK") or "OK").upper()
+    if status == "SKIPPED_NO_FLOW":
+        return True
+    verdict_val = getattr(res.ged.verdict, "value", str(res.ged.verdict))
+    return str(verdict_val).lower() == "skipped"
+
+
+def _verdict_display_text(
+    i18n: I18nManager,
+    verdict: Any,
+    lbl: dict[str, str],
+    is_skipped: bool = False,
+) -> str:
+    """Return localized verdict text, handling SKIPPED defensively."""
+    verdict_val = "skipped" if is_skipped else str(getattr(verdict, "value", verdict)).lower()
+    key = f"enums.ged_verdict.{verdict_val}"
+    translated = i18n.t(key)
+    if translated == key and verdict_val == "skipped":
+        return lbl["verdict_skipped"]
+    return translated
+
+
+def _apply_verdict_style(
+    cell: Any,
+    verdict: Any,
+    styles: dict[str, Any],
+    is_skipped: bool = False,
+) -> None:
+    verdict_str = "skipped" if is_skipped else str(getattr(verdict, "value", verdict)).lower()
+    if verdict_str == "skipped":
+        cell.fill = styles["skip_fill"]
+        cell.font = styles["skip_font"]
+    elif verdict_str == "pass":
         cell.fill = styles["pass_fill"]
         cell.font = styles["pass_font"]
-    elif verdict == GEDVerdict.WARNING:
+    elif verdict_str == "warning":
         cell.fill = styles["warn_fill"]
         cell.font = styles["warn_font"]
     else:
         cell.fill = styles["fail_fill"]
         cell.font = styles["fail_font"]
+
+
+def _build_proportional_logo(
+    logo_path: Path,
+    max_w: float = 140.0,
+    max_h: float = 46.0,
+) -> OpenpyxlImage:
+    """Build an openpyxl Image scaled proportionally within (max_w, max_h)."""
+    xl_logo = OpenpyxlImage(str(logo_path))
+    try:
+        with PILImage.open(logo_path) as pil_img:
+            orig_w, orig_h = pil_img.size
+        if orig_w > 0 and orig_h > 0:
+            scale = min(max_w / float(orig_w), max_h / float(orig_h))
+            xl_logo.width = max(1, int(round(orig_w * scale)))
+            xl_logo.height = max(1, int(round(orig_h * scale)))
+        else:
+            xl_logo.width = int(round(max_w))
+            xl_logo.height = int(round(max_h))
+    except Exception:
+        xl_logo.width = int(round(max_w))
+        xl_logo.height = int(round(max_h))
+    return xl_logo
+
+
+def _configure_chart_axes(chart: Any, x_title: str, y_title: str) -> None:
+    """Explicitly configure axis visibility, titles, positions, and non-overlapping legend."""
+    chart.x_axis.title = x_title
+    chart.y_axis.title = y_title
+    chart.x_axis.delete = False
+    chart.y_axis.delete = False
+    chart.x_axis.axPos = "b"
+    chart.y_axis.axPos = "l"
+    chart.x_axis.tickLblPos = "low"
+    if chart.legend is None:
+        chart.legend = Legend()
+    chart.legend.overlay = False
 
 
 def _autofit_columns(ws: Any, min_width: float = 10.0, max_width: float = 44.0) -> None:
@@ -324,9 +409,7 @@ def export_to_excel(
     ws_exec["C2"].font = styles["subbanner_font"]
     ws_exec["C2"].alignment = Alignment(horizontal="left", vertical="center")
 
-    xl_logo = OpenpyxlImage(str(logo_path))
-    xl_logo.width = 165
-    xl_logo.height = 50
+    xl_logo = _build_proportional_logo(logo_path, max_w=140.0, max_h=46.0)
     ws_exec.add_image(xl_logo, "A1")
 
     # Section: Corporate & Traceability Metadata
@@ -350,13 +433,14 @@ def export_to_excel(
         (lbl["sha256"], dataset.file_sha256),
     ]
     ged = reconciliation_result.ged
+    res_is_skipped = _is_skipped_result(reconciliation_result)
     ged_pairs = [
         (i18n.t("step05.objective_j"), ged.objective_j, "0.0000"),
         (i18n.t("step05.chi2_critical"), ged.chi2_critical, "0.0000"),
         (lbl["dof"], ged.degrees_of_freedom, "0"),
         (i18n.t("step05.p_value"), ged.p_value, "0.0000"),
         (i18n.t("step05.z_critical"), ged.z_critical, "0.0000"),
-        (lbl["verdict"], i18n.t(f"enums.ged_verdict.{ged.verdict.value}"), None),
+        (lbl["verdict"], _verdict_display_text(i18n, ged.verdict, lbl, is_skipped=res_is_skipped), None),
         (lbl["max_z_var"], ged.max_abs_z_variable or "-", None),
         (lbl["max_z_val"], ged.max_abs_z_value, "0.0000"),
     ]
@@ -386,7 +470,7 @@ def export_to_excel(
             c_gv.number_format = g_fmt
             c_gv.alignment = Alignment(horizontal="right", vertical="center")
         if gk_lbl == lbl["verdict"]:
-            _apply_verdict_style(c_gv, ged.verdict, styles)
+            _apply_verdict_style(c_gv, ged.verdict, styles, is_skipped=res_is_skipped)
         for c_i in range(8, 10):
             ws_exec.cell(row=r, column=c_i).border = styles["border"]
 
@@ -463,12 +547,11 @@ def export_to_excel(
         bar.type = "col"
         bar.style = 10
         bar.title = f"{lbl['chart_rec_title']} — {primary_sp.id}"
-        bar.y_axis.title = "%"
         data_ref = Reference(ws_exec, min_col=8, min_row=kpi_hdr_row, max_row=kpi_end)
         cats_ref = Reference(ws_exec, min_col=1, min_row=kpi_start, max_row=kpi_end)
         bar.add_data(data_ref, titles_from_data=True)
         bar.set_categories(cats_ref)
-        bar.legend = None
+        _configure_chart_axes(bar, lbl["chart_x_stream_prod"], lbl["chart_y_recovery"])
         bar.width = 16
         bar.height = 9
         ws_exec.add_chart(bar, f"A{kpi_tot_row + 2}")
@@ -653,12 +736,13 @@ def export_to_excel(
         bal_chart.type = "col"
         bal_chart.style = 10
         bal_chart.title = f"{lbl['chart_rec_title']} ({circuit.species[0].id})"
-        bal_chart.y_axis.title = "%"
         data_ref = Reference(ws_bal, min_col=10, min_row=chart_start_row, max_row=chart_end_row)
         cats_ref = Reference(ws_bal, min_col=1, min_row=chart_start_row, max_row=chart_end_row)
         bal_chart.add_data(data_ref, titles_from_data=False)
         bal_chart.set_categories(cats_ref)
-        bal_chart.legend = None
+        if bal_chart.series:
+            bal_chart.series[0].tx = SeriesLabel(v=f"{lbl['recovery_rec']} ({circuit.species[0].id})")
+        _configure_chart_axes(bal_chart, lbl["chart_x_stream_prod"], lbl["chart_y_recovery"])
         bal_chart.width = 15
         bal_chart.height = 8
         ws_bal.add_chart(bal_chart, "L3")
@@ -680,7 +764,7 @@ def export_to_excel(
         (lbl["alpha"], ged.alpha, "0.000"),
         (i18n.t("step05.p_value"), ged.p_value, "0.0000"),
         (i18n.t("step05.z_critical"), ged.z_critical, "0.0000"),
-        (lbl["verdict"], i18n.t(f"enums.ged_verdict.{ged.verdict.value}"), None),
+        (lbl["verdict"], _verdict_display_text(i18n, ged.verdict, lbl, is_skipped=res_is_skipped), None),
         (lbl["max_z_var"], ged.max_abs_z_variable or "-", None),
         (lbl["max_z_val"], ged.max_abs_z_value, "0.0000"),
     ]
@@ -696,7 +780,7 @@ def export_to_excel(
         else:
             c_v.font = styles["bold_font"]
         if k == lbl["verdict"]:
-            _apply_verdict_style(c_v, ged.verdict, styles)
+            _apply_verdict_style(c_v, ged.verdict, styles, is_skipped=res_is_skipped)
 
     # Outlier comparison block if present
     z_hdr_row = 14
@@ -737,6 +821,12 @@ def export_to_excel(
     _style_table_header(ws_ged, z_hdr_row, ged_headers, styles)
     ws_ged.freeze_panes = f"A{z_hdr_row + 1}"
 
+    z_crit = float(ged.z_critical) if ged.z_critical > 0 else 1.959964
+    z_warn = 1.644854 if z_crit > 1.644854 else min(1.644854, z_crit * 0.85)
+    z_crit_str = f"{z_crit:.6f}"
+    z_warn_str = f"{z_warn:.6f}"
+    z_warn_hi_str = f"{z_warn + 0.000001:.6f}"
+
     z_start = z_hdr_row + 1
     for idx, adj in enumerate(reconciliation_result.adjustments):
         r = z_start + idx
@@ -754,7 +844,7 @@ def export_to_excel(
         ws_ged.cell(
             row=r,
             column=11,
-            value=f'=IF(NOT(ISNUMBER(I{r})),"UNMEASURED",IF(I{r}>{ged.z_critical:.6f},"FAIL",IF(I{r}>2.0,"WARNING","PASS")))',
+            value=f'=IF(NOT(ISNUMBER(I{r})),"UNMEASURED",IF(I{r}>{z_crit_str},"FAIL",IF(I{r}>{z_warn_str},"WARNING","PASS")))',
         ).font = styles["bold_font"]
 
         for c_i in range(1, 12):
@@ -770,15 +860,15 @@ def export_to_excel(
     abs_z_range = f"I{z_start}:I{z_end}"
     ws_ged.conditional_formatting.add(
         abs_z_range,
-        CellIsRule(operator="greaterThan", formula=[f"{ged.z_critical:.6f}"], fill=styles["fail_fill"], font=styles["fail_font"]),
+        CellIsRule(operator="greaterThan", formula=[z_crit_str], fill=styles["fail_fill"], font=styles["fail_font"]),
     )
     ws_ged.conditional_formatting.add(
         abs_z_range,
-        CellIsRule(operator="between", formula=["2.000001", f"{ged.z_critical:.6f}"], fill=styles["warn_fill"], font=styles["warn_font"]),
+        CellIsRule(operator="between", formula=[z_warn_hi_str, z_crit_str], fill=styles["warn_fill"], font=styles["warn_font"]),
     )
     ws_ged.conditional_formatting.add(
         abs_z_range,
-        CellIsRule(operator="between", formula=["0", "2.0"], fill=styles["pass_fill"], font=styles["pass_font"]),
+        CellIsRule(operator="between", formula=["0", z_warn_str], fill=styles["pass_fill"], font=styles["pass_font"]),
     )
 
     # ------------------------------------------------------------------
@@ -810,21 +900,31 @@ def export_to_excel(
 
     series_results = batch_result.results if batch_result is not None else [reconciliation_result]
     h_start = 4
+    actual_skipped_rows = 0
     for idx, res in enumerate(series_results):
         r = h_start + idx
+        is_skipped = _is_skipped_result(res)
+        if is_skipped:
+            actual_skipped_rows += 1
         fill = styles["zebra_fill"] if idx % 2 == 1 else PatternFill(fill_type=None)
         ws_hist.cell(row=r, column=1, value=res.period_id).font = styles["bold_font"]
-        ws_hist.cell(row=r, column=2, value=lbl["yes"] if res.converged else lbl["no"]).font = styles["text_font"]
+        ws_hist.cell(row=r, column=2, value="-" if is_skipped else (lbl["yes"] if res.converged else lbl["no"])).font = styles["text_font"]
         ws_hist.cell(row=r, column=3, value=res.solver_used).font = styles["text_font"]
-        ws_hist.cell(row=r, column=4, value=res.iterations).number_format = "0"
-        ws_hist.cell(row=r, column=5, value=res.max_mass_residual).number_format = "0.00E+00"
-        ws_hist.cell(row=r, column=6, value=res.max_species_residual).number_format = "0.00E+00"
-        ws_hist.cell(row=r, column=7, value=res.ged.objective_j).number_format = "0.0000"
-        ws_hist.cell(row=r, column=8, value=res.ged.chi2_critical).number_format = "0.0000"
-        ws_hist.cell(row=r, column=9, value=res.ged.p_value).number_format = "0.0000"
-        c_verd = ws_hist.cell(row=r, column=10, value=res.ged.verdict.value.upper())
-        ws_hist.cell(row=r, column=11, value=res.ged.max_abs_z_variable or "-").font = styles["mono_font"]
-        ws_hist.cell(row=r, column=12, value=res.ged.max_abs_z_value).number_format = "0.0000"
+        ws_hist.cell(row=r, column=4, value=None if is_skipped else res.iterations).number_format = "0"
+        ws_hist.cell(row=r, column=5, value=None if is_skipped else res.max_mass_residual).number_format = "0.00E+00"
+        ws_hist.cell(row=r, column=6, value=None if is_skipped else res.max_species_residual).number_format = "0.00E+00"
+        ws_hist.cell(row=r, column=7, value=None if is_skipped else res.ged.objective_j).number_format = "0.0000"
+        chi_crit_cell_val = (
+            (res.ged.chi2_critical if res.ged.chi2_critical > 0 else None)
+            if is_skipped
+            else res.ged.chi2_critical
+        )
+        ws_hist.cell(row=r, column=8, value=chi_crit_cell_val).number_format = "0.0000"
+        ws_hist.cell(row=r, column=9, value=None if is_skipped else res.ged.p_value).number_format = "0.0000"
+        verdict_code = "SKIPPED / NO_FLOW" if is_skipped else str(getattr(res.ged.verdict, "value", res.ged.verdict)).upper()
+        c_verd = ws_hist.cell(row=r, column=10, value=verdict_code)
+        ws_hist.cell(row=r, column=11, value="-" if is_skipped else (res.ged.max_abs_z_variable or "-")).font = styles["mono_font"]
+        ws_hist.cell(row=r, column=12, value=None if is_skipped else res.ged.max_abs_z_value).number_format = "0.0000"
 
         for c_i in range(1, 13):
             cell = ws_hist.cell(row=r, column=c_i)
@@ -834,7 +934,7 @@ def export_to_excel(
             if c_i in (4, 5, 6, 7, 8, 9, 12):
                 cell.font = styles["mono_font"]
                 cell.alignment = Alignment(horizontal="right", vertical="center")
-        _apply_verdict_style(c_verd, res.ged.verdict, styles)
+        _apply_verdict_style(c_verd, res.ged.verdict, styles, is_skipped=is_skipped)
 
     h_end = h_start + len(series_results) - 1
     mean_row = h_end + 1
@@ -850,10 +950,16 @@ def export_to_excel(
             c.alignment = Alignment(horizontal="right", vertical="center")
 
     # Summary counts using COUNTIF
-    for offset, (label_txt, status_code) in enumerate(
-        [(lbl["count_pass"], "PASS"), (lbl["count_warn"], "WARNING"), (lbl["count_fail"], "FAIL")],
-        start=2,
-    ):
+    summary_items: list[tuple[str, str]] = [
+        (lbl["count_pass"], "PASS"),
+        (lbl["count_warn"], "WARNING"),
+        (lbl["count_fail"], "FAIL"),
+    ]
+    batch_skipped = int(getattr(batch_result, "summary_skipped_count", 0) or 0) if batch_result is not None else 0
+    if batch_skipped > 0 or actual_skipped_rows > 0:
+        summary_items.append((lbl["count_skipped"], "SKIPPED*"))
+
+    for offset, (label_txt, status_code) in enumerate(summary_items, start=2):
         sr = mean_row + offset
         ws_hist.cell(row=sr, column=1, value=label_txt).font = styles["bold_font"]
         ws_hist.cell(row=sr, column=1).border = styles["border"]
@@ -862,19 +968,19 @@ def export_to_excel(
         c_cnt.border = styles["border"]
         c_cnt.number_format = "0"
 
-    # LineChart on Serie_Historica
+    # LineChart on Serie_Historica (anchored visibly at top-right N3)
     line = LineChart()
     line.title = lbl["chart_chi2_title"]
     line.style = 10
-    line.y_axis.title = "Chi2"
-    line.x_axis.title = lbl["period"]
     data_ref = Reference(ws_hist, min_col=7, max_col=8, min_row=3, max_row=h_end)
     cats_ref = Reference(ws_hist, min_col=1, min_row=h_start, max_row=h_end)
     line.add_data(data_ref, titles_from_data=True)
     line.set_categories(cats_ref)
+    _configure_chart_axes(line, lbl["period"], lbl["chart_y_chi2"])
+    line.dispBlanksAs = "gap"
     line.width = 18
-    line.height = 9
-    ws_hist.add_chart(line, f"D{mean_row + 2}")
+    line.height = 10
+    ws_hist.add_chart(line, "N3")
 
     # ------------------------------------------------------------------
     # Sheet 5: Datos_Auditados / Audited_Data

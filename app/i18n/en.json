@@ -163,7 +163,8 @@
     "ged_verdict": {
       "pass": "Pass (Consistent)",
       "warning": "Warning (Review)",
-      "fail": "GED Fail (Gross Error)"
+      "fail": "GED Fail (Gross Error)",
+      "skipped": "Skipped (No Flow)"
     }
   },
   "step01": {
@@ -245,6 +246,7 @@
     "nullify_out_of_range": "Nullify out-of-range grades (> 100 % or < 0)",
     "convert_units": "Convert detected units to circuit base units",
     "drop_non_metallurgical": "Exclude non-metallurgical operational columns",
+    "drop_zero_or_negative_flow": "Skip shifts with mass flow <= 0 or no operation",
     "missing_strategy_label": "Missing values strategy",
     "strategy_keep": "Keep as Unmeasured (recommended for WLS)",
     "strategy_drop": "Drop entire row",
@@ -354,6 +356,7 @@
     "batch_pass": "Passed",
     "batch_warning": "Warnings",
     "batch_fail": "GED Fails",
+    "batch_skipped": "Skipped (No Flow)",
     "batch_mean_chi2": "Mean J*"
   },
   "step06": {
@@ -461,7 +464,13 @@
     "confirm": "Confirm",
     "na": "N/A",
     "filter": "Filter",
-    "export": "Export"
+    "export": "Export",
+    "expand_table": "Expand Table",
+    "table_inspector_title": "Expanded Table Viewer — {title}",
+    "search_placeholder": "Filter rows by text...",
+    "copy_tsv": "Copy Table to Clipboard (TSV)",
+    "copied_tsv_msg": "Table copied to clipboard ({rows} rows).",
+    "rows_visible_fmt": "{visible} of {total} rows"
   },
   "workspace": {
     "tab_flowsheet": "Flowsheet (Main)",

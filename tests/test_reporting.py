@@ -11,6 +11,7 @@ from pathlib import Path
 
 import openpyxl
 import pytest
+from openpyxl.utils.units import EMU_to_cm, EMU_to_pixels
 from PIL import Image
 
 from core.etl import (
@@ -20,7 +21,13 @@ from core.etl import (
     profile_file,
 )
 from core.kpis import compute_kpis
-from core.models import CorporateBrandingProfile
+from core.models import (
+    BatchReconciliationResult,
+    CorporateBrandingProfile,
+    GEDReport,
+    GEDVerdict,
+    ReconciliationResult,
+)
 from core.reconciliation import compare_with_without_outlier, reconcile_batch, reconcile_period
 from core.topology import get_circuit_template
 from reporting.branding import (
@@ -28,7 +35,7 @@ from reporting.branding import (
     load_branding_profile,
     save_branding_profile,
 )
-from reporting.excel_exporter import export_to_excel
+from reporting.excel_exporter import _build_proportional_logo, export_to_excel
 from reporting.pdf_exporter import export_to_pdf
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -257,3 +264,211 @@ def test_export_to_pdf_multipage_content_and_traceability(tmp_path: Path, lang: 
     assert f"{result.ged.objective_j:.4f}" in extracted_text
     assert f"{result.ged.chi2_critical:.4f}" in extracted_text
     assert f"{kpi_report.feed_mass_rec:.2f}" in extracted_text
+
+
+def _extract_chart_title_text(title_obj) -> str:
+    """Extract plain text from an openpyxl chart/axis Title object."""
+    if title_obj is None or getattr(title_obj, "tx", None) is None:
+        return ""
+    rich = getattr(title_obj.tx, "rich", None)
+    if rich is None:
+        return ""
+    parts: list[str] = []
+    for para in getattr(rich, "p", []) or []:
+        for run in getattr(para, "r", []) or []:
+            if getattr(run, "t", None):
+                parts.append(str(run.t))
+    return "".join(parts).strip()
+
+
+def _make_skipped_result(circuit, period_id: str = "G-NOFLOW") -> ReconciliationResult:
+    """Create a SKIPPED_NO_FLOW ReconciliationResult compatible with BatchReconciliationResult."""
+    return ReconciliationResult(
+        period_id=period_id,
+        converged=False,
+        solver_used="skipped_no_flow",
+        iterations=0,
+        max_mass_residual=0.0,
+        max_species_residual=0.0,
+        reconciled_mass_flows={s.id: 0.0 for s in circuit.streams},
+        reconciled_assays={
+            s.id: {sp.id: 0.0 for sp in circuit.species} for s in circuit.streams
+        },
+        adjustments=[],
+        ged=GEDReport(
+            objective_j=0.0,
+            degrees_of_freedom=0,
+            alpha=0.05,
+            chi2_critical=0.0,
+            p_value=1.0,
+            z_critical=1.959964,
+            verdict=GEDVerdict.SKIPPED,
+            suspect_variables=[],
+            max_abs_z_variable=None,
+            max_abs_z_value=0.0,
+        ),
+        excluded_outliers=[],
+        status="SKIPPED_NO_FLOW",
+    )
+
+
+@pytest.mark.parametrize("lang", ["es", "en"])
+def test_excel_logo_ratio_chart_axes_n3_anchor_skipped_and_ged_formula(
+    tmp_path: Path,
+    lang: str,
+) -> None:
+    """Verify proportional square/wide logos, chart axis metadata, N3 anchor, NO_FLOW handling, and GED WARNING formula."""
+    circuit, dataset, uncertainty, result, kpi_report, batch_result, outlier_cmp, branding = (
+        _build_sample_reporting_bundle()
+    )
+
+    # 1. Square 200x200 logo preserves 1:1 aspect ratio within 140x46 box
+    square_logo = tmp_path / f"square_logo_{lang}.png"
+    Image.new("RGB", (200, 200), "#1B4965").save(square_logo)
+    sq_xl = _build_proportional_logo(square_logo)
+    assert sq_xl.width == sq_xl.height == 46
+
+    wide_logo = tmp_path / f"wide_logo_{lang}.png"
+    Image.new("RGB", (320, 80), "#1B4965").save(wide_logo)
+    wide_xl = _build_proportional_logo(wide_logo)
+    assert wide_xl.width == 140
+    assert wide_xl.height == 35
+
+    branding = branding.model_copy(update={"logo_path": str(square_logo)})
+
+    # Inject a SKIPPED_NO_FLOW shift into the batch
+    skipped_res = _make_skipped_result(circuit, period_id="G-NOFLOW-01")
+    batch_with_skipped = BatchReconciliationResult(
+        results=[*batch_result.results, skipped_res],
+        summary_pass_count=batch_result.summary_pass_count,
+        summary_warning_count=batch_result.summary_warning_count,
+        summary_fail_count=batch_result.summary_fail_count,
+        summary_skipped_count=1,
+        mean_chi2=batch_result.mean_chi2,
+    )
+
+    xlsx_path = tmp_path / f"polished_{lang}.xlsx"
+    out = export_to_excel(
+        xlsx_path,
+        circuit,
+        dataset,
+        uncertainty,
+        result,
+        kpi_report,
+        branding,
+        batch_result=batch_with_skipped,
+        outlier_comparison=outlier_cmp,
+        language=lang,
+    )
+
+    wb = openpyxl.load_workbook(out, data_only=False)
+    ws_exec = wb[wb.sheetnames[0]]
+    ws_bal = wb[wb.sheetnames[1]]
+    ws_ged = wb[wb.sheetnames[2]]
+    ws_hist = wb[wb.sheetnames[3]]
+
+    # Verify saved square logo dimensions in workbook XML (via anchor EMU extents)
+    assert len(ws_exec._images) == 1
+    saved_img = ws_exec._images[0]
+    w_px = round(EMU_to_pixels(saved_img.anchor.ext.cx))
+    h_px = round(EMU_to_pixels(saved_img.anchor.ext.cy))
+    assert w_px == h_px <= 46
+
+    # Verify all 3 charts have explicit axis visibility, positioning, titles, and legend.overlay = False
+    for ws_chart_host in (ws_exec, ws_bal, ws_hist):
+        assert len(ws_chart_host._charts) >= 1
+        ch = ws_chart_host._charts[0]
+        assert ch.x_axis.delete is False
+        assert ch.y_axis.delete is False
+        assert ch.x_axis.axPos == "b"
+        assert ch.y_axis.axPos == "l"
+        assert ch.x_axis.tickLblPos == "low"
+        assert ch.legend is not None
+        assert ch.legend.overlay is False
+        assert _extract_chart_title_text(ch.x_axis.title) != ""
+        assert _extract_chart_title_text(ch.y_axis.title) != ""
+
+    # Verify Serie_Historica LineChart is anchored at N3 (col=13, row=2) with width=18, height=10
+    hist_chart = ws_hist._charts[0]
+    assert hist_chart.anchor._from.col == 13
+    assert hist_chart.anchor._from.row == 2
+    assert EMU_to_cm(hist_chart.anchor.ext.cx) == pytest.approx(18.0, abs=0.1)
+    assert EMU_to_cm(hist_chart.anchor.ext.cy) == pytest.approx(10.0, abs=0.1)
+
+    # Verify SKIPPED_NO_FLOW shift row in Serie_Historica has blank J* and clear skipped status
+    skipped_row_idx = 4 + len(batch_result.results)
+    assert ws_hist.cell(row=skipped_row_idx, column=1).value == "G-NOFLOW-01"
+    assert ws_hist.cell(row=skipped_row_idx, column=7).value is None
+    assert ws_hist.cell(row=skipped_row_idx, column=10).value == "SKIPPED / NO_FLOW"
+
+    hist_formulas = [
+        str(cell.value)
+        for row in ws_hist.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str) and cell.value.startswith("=")
+    ]
+    assert any("SKIPPED*" in f for f in hist_formulas)
+
+    # Verify Diagnostico_GED WARNING threshold uses 1.644854 and has no dead >2.0 clause
+    ged_status_formulas = [
+        str(ws_ged.cell(row=r, column=11).value)
+        for r in range(15, 15 + len(result.adjustments))
+    ]
+    assert ged_status_formulas
+    for formula in ged_status_formulas:
+        assert "1.644854" in formula
+        assert '"WARNING"' in formula
+        assert ">2.0," not in formula
+
+
+@pytest.mark.parametrize("lang", ["es", "en"])
+def test_pdf_long_circuit_name_fine_unit_header_and_skipped_batch(
+    tmp_path: Path,
+    lang: str,
+) -> None:
+    """Verify PDF handles long circuit names, shows mass unit in Section 2 fine header, and excludes NO_FLOW from Chi2 plot."""
+    circuit, dataset, uncertainty, result, kpi_report, batch_result, outlier_cmp, branding = (
+        _build_sample_reporting_bundle()
+    )
+    long_name = (
+        "Planta Concentradora Polimetalica de Alta Complejidad Operativa "
+        "Linea Primaria 4 Productos Ag-Cu-Pb-Zn"
+    )
+    long_desc = (
+        "Circuito industrial de flotacion diferencial secuencial con molienda SAG "
+        "y remolienda fina para recuperacion de plata, cobre, plomo y zinc."
+    )
+    long_circuit = circuit.model_copy(update={"name": long_name, "description": long_desc})
+
+    skipped_res = _make_skipped_result(long_circuit, period_id="G-NOFLOW-02")
+    batch_with_skipped = BatchReconciliationResult(
+        results=[*batch_result.results, skipped_res],
+        summary_pass_count=batch_result.summary_pass_count,
+        summary_warning_count=batch_result.summary_warning_count,
+        summary_fail_count=batch_result.summary_fail_count,
+        summary_skipped_count=1,
+        mean_chi2=batch_result.mean_chi2,
+    )
+
+    pdf_path = tmp_path / f"long_circuit_{lang}.pdf"
+    out = export_to_pdf(
+        pdf_path,
+        long_circuit,
+        dataset,
+        uncertainty,
+        result,
+        kpi_report,
+        branding,
+        batch_result=batch_with_skipped,
+        outlier_comparison=outlier_cmp,
+        language=lang,
+    )
+    assert out.exists() and out.stat().st_size > 15000
+
+    extracted_text, page_count = _extract_pdf_text_and_page_count(out)
+    assert page_count >= 2
+    assert "Planta Concentradora Polimetalica" in extracted_text
+    assert long_circuit.mass_unit.value in extracted_text
+    expected_fine_prefix = "Fino Rec." if lang == "es" else "Rec. Fine"
+    assert expected_fine_prefix in extracted_text
+    assert f"({long_circuit.mass_unit.value})" in extracted_text

@@ -32,8 +32,12 @@ from .flowsheet_canvas import FlowsheetCanvas
 from .ui_common import (
     InspectorPayload,
     ProjectState,
+    TableInspectorDialog,
+    autosize_table_headers,
     configure_dense_table,
     get_theme_palette,
+    load_svg_icon,
+    make_expand_table_button,
     make_numeric_item,
     make_text_item,
     monospace_font,
@@ -113,6 +117,8 @@ class ChartsView(QWidget):
         ):
             summary_row.addWidget(lbl)
         summary_row.addStretch(1)
+        self.expand_kpi_btn = make_expand_table_button(self.kpi_group, self._theme)
+        summary_row.addWidget(self.expand_kpi_btn)
         kpi_v.addLayout(summary_row)
 
         self.kpi_table = QTableWidget(0, 11, self.kpi_group)
@@ -188,11 +194,37 @@ class ChartsView(QWidget):
 
         self.period_combo.currentIndexChanged.connect(self._on_period_changed)
         self.trend_sp_combo.currentIndexChanged.connect(self._render_trends_chart)
+        self.expand_kpi_btn.clicked.connect(self._on_expand_kpi)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         self.prev_btn.clicked.connect(self.prev_step_requested.emit)
         self.next_btn.clicked.connect(self._on_next_clicked)
 
+    def _on_expand_kpi(self) -> None:
+        dlg = TableInspectorDialog(
+            self.kpi_table,
+            self._i18n.t("step06.section_kpis"),
+            theme=self._theme,
+            parent=self,
+        )
+        dlg.exec()
+
+    def _fit_sankey_canvas(self) -> None:
+        fit_fn = getattr(self.sankey_canvas, "fit_to_view", None) or getattr(
+            self.sankey_canvas, "zoom_fit", None
+        )
+        if callable(fit_fn):
+            fit_fn()
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index == 0:
+            self._fit_sankey_canvas()
+
+    def _update_icons(self) -> None:
+        self.expand_kpi_btn.setIcon(load_svg_icon("reset_layout.svg", self._theme, size=14))
+
     def set_theme(self, theme: str) -> None:
         self._theme = theme
+        self._update_icons()
         self.sankey_canvas.set_theme(theme)
         self._render_all_charts()
 
@@ -230,12 +262,15 @@ class ChartsView(QWidget):
 
             self.prev_btn.setText(self._i18n.t("workflow.nav.prev_step"))
             self.next_btn.setText(self._i18n.t("workflow.nav.next_step"))
+            self.expand_kpi_btn.setText(self._i18n.t("common.expand_table"))
         finally:
             self._syncing = False
 
+        self._update_icons()
         self.sankey_canvas.retranslate_ui()
         self._render_kpis_table()
         self._render_all_charts()
+        autosize_table_headers(self.kpi_table, stretch_last=True)
 
     def refresh_from_state(self) -> None:
         """Compute KPIReport for active result and update KPI table + all 4 charts."""
@@ -311,6 +346,7 @@ class ChartsView(QWidget):
             self.feed_rec_val.setText("-")
             self.unexp_mass_val.setText("-")
             self.kpi_table.setRowCount(0)
+            autosize_table_headers(self.kpi_table, stretch_last=True)
             return
 
         self.feed_nom_val.setText(
@@ -368,6 +404,7 @@ class ChartsView(QWidget):
                 10,
                 make_numeric_item(prod.recovery_rec_pct.get(sp.id), fmt="{:.2f}%", bold=True),
             )
+        autosize_table_headers(self.kpi_table, stretch_last=True)
 
     def _render_all_charts(self) -> None:
         self._render_sankey()
@@ -399,6 +436,7 @@ class ChartsView(QWidget):
         else:
             self.sankey_title_lbl.setText(self._i18n.t("step06.tab_sankey"))
             self.sankey_canvas.load_circuit(self._state.circuit, reconciliation=None)
+        self._fit_sankey_canvas()
 
     def _render_parity_chart(self) -> None:
         self.parity_fig.clear()
@@ -570,6 +608,18 @@ class ChartsView(QWidget):
         if not results:
             self.trends_canvas.draw_idle()
             return
+
+        filtered_pairs = [
+            (pt, res)
+            for pt, res in zip(points, results)
+            if str(getattr(res, "status", "OK")) != "SKIPPED_NO_FLOW"
+            and str(res.ged.verdict.value) != "skipped"
+        ]
+        if not filtered_pairs:
+            self.trends_canvas.draw_idle()
+            return
+        points = [pt for pt, _ in filtered_pairs]
+        results = [res for _, res in filtered_pairs]
 
         period_labels = [r.period_id for r in results]
         x_idx = list(range(len(results)))

@@ -163,7 +163,8 @@
     "ged_verdict": {
       "pass": "Aprobado (Consistente)",
       "warning": "Advertencia (Revisar)",
-      "fail": "Fallo GED (Error Grosero)"
+      "fail": "Fallo GED (Error Grosero)",
+      "skipped": "Omitido (Sin Flujo)"
     }
   },
   "step01": {
@@ -245,6 +246,7 @@
     "nullify_out_of_range": "Anular leyes fuera de rango físico (> 100 % o < 0)",
     "convert_units": "Homologar unidades detectadas a la unidad del circuito",
     "drop_non_metallurgical": "Excluir columnas operativas no metalúrgicas",
+    "drop_zero_or_negative_flow": "Omitir guardias con flujo másico <= 0 o sin operación",
     "missing_strategy_label": "Tratamiento de faltantes",
     "strategy_keep": "Mantener como No Medido (recomendado para WLS)",
     "strategy_drop": "Descartar fila completa",
@@ -354,6 +356,7 @@
     "batch_pass": "Aprobados",
     "batch_warning": "Advertencias",
     "batch_fail": "Fallos GED",
+    "batch_skipped": "Omitidos (Sin Flujo)",
     "batch_mean_chi2": "J* Promedio"
   },
   "step06": {
@@ -461,7 +464,13 @@
     "confirm": "Confirmar",
     "na": "N/D",
     "filter": "Filtrar",
-    "export": "Exportar"
+    "export": "Exportar",
+    "expand_table": "Expandir Tabla",
+    "table_inspector_title": "Visor Ampliado de Tabla — {title}",
+    "search_placeholder": "Filtrar filas por texto...",
+    "copy_tsv": "Copiar tabla al portapapeles (TSV)",
+    "copied_tsv_msg": "Tabla copiada al portapapeles ({rows} filas).",
+    "rows_visible_fmt": "{visible} de {total} filas"
   },
   "workspace": {
     "tab_flowsheet": "Flujograma (Principal)",

@@ -42,10 +42,13 @@ from .ui_common import (
     FlowLayout,
     InspectorPayload,
     ProjectState,
+    TableInspectorDialog,
     apply_status_role,
+    autosize_table_headers,
     configure_dense_table,
     get_theme_palette,
     load_svg_icon,
+    make_expand_table_button,
     make_numeric_item,
     make_text_item,
     monospace_font,
@@ -285,6 +288,11 @@ class SolverResultsView(QWidget):
 
         self.adj_group = QGroupBox(adj_container)
         adj_tbl_layout = QVBoxLayout(self.adj_group)
+        adj_top = QHBoxLayout()
+        adj_top.addStretch(1)
+        self.expand_adjustments_btn = make_expand_table_button(self.adj_group, self._theme)
+        adj_top.addWidget(self.expand_adjustments_btn)
+        adj_tbl_layout.addLayout(adj_top)
         self.adjustments_table = QTableWidget(0, 9, self.adj_group)
         self.adjustments_table.setObjectName("WLSAdjustmentsTable")
         configure_dense_table(self.adjustments_table, stretch_last=True, editable=False)
@@ -301,16 +309,20 @@ class SolverResultsView(QWidget):
         self.batch_pass_lbl = QLabel(self.batch_group)
         self.batch_warn_lbl = QLabel(self.batch_group)
         self.batch_fail_lbl = QLabel(self.batch_group)
+        self.batch_skipped_lbl = QLabel(self.batch_group)
         self.batch_mean_lbl = QLabel(self.batch_group)
         for lbl in (
             self.batch_pass_lbl,
             self.batch_warn_lbl,
             self.batch_fail_lbl,
+            self.batch_skipped_lbl,
             self.batch_mean_lbl,
         ):
             lbl.setFont(monospace_font(9.0, bold=True))
             batch_stats.addWidget(lbl)
         batch_stats.addStretch(1)
+        self.expand_batch_btn = make_expand_table_button(self.batch_group, self._theme)
+        batch_stats.addWidget(self.expand_batch_btn)
         batch_v.addLayout(batch_stats)
 
         self.batch_table = QTableWidget(0, 6, self.batch_group)
@@ -343,8 +355,28 @@ class SolverResultsView(QWidget):
         self.clear_outliers_btn.clicked.connect(self.clear_outliers)
         self.compare_outliers_btn.clicked.connect(self.run_outlier_comparison)
         self.batch_table.cellClicked.connect(self._on_batch_row_clicked)
+        self.expand_adjustments_btn.clicked.connect(self._on_expand_adjustments)
+        self.expand_batch_btn.clicked.connect(self._on_expand_batch)
         self.prev_btn.clicked.connect(self.prev_step_requested.emit)
         self.next_btn.clicked.connect(self.next_step_requested.emit)
+
+    def _on_expand_adjustments(self) -> None:
+        dlg = TableInspectorDialog(
+            self.adjustments_table,
+            self._i18n.t("step05.section_adjustments"),
+            theme=self._theme,
+            parent=self,
+        )
+        dlg.exec()
+
+    def _on_expand_batch(self) -> None:
+        dlg = TableInspectorDialog(
+            self.batch_table,
+            self._i18n.t("step05.section_batch"),
+            theme=self._theme,
+            parent=self,
+        )
+        dlg.exec()
 
     def is_busy(self) -> bool:
         """Return True if a background reconciliation thread is active."""
@@ -376,6 +408,9 @@ class SolverResultsView(QWidget):
         self.compare_outliers_btn.setIcon(
             load_svg_icon("scatter_plot.svg", self._theme, color_override="#FFFFFF", size=16)
         )
+        expand_icon = load_svg_icon("reset_layout.svg", self._theme, size=14)
+        self.expand_adjustments_btn.setIcon(expand_icon)
+        self.expand_batch_btn.setIcon(expand_icon)
 
     def retranslate_ui(self) -> None:
         self._syncing = True
@@ -426,11 +461,15 @@ class SolverResultsView(QWidget):
 
             self.prev_btn.setText(self._i18n.t("workflow.nav.prev_step"))
             self.next_btn.setText(self._i18n.t("workflow.nav.next_step"))
+            self.expand_adjustments_btn.setText(self._i18n.t("common.expand_table"))
+            self.expand_batch_btn.setText(self._i18n.t("common.expand_table"))
         finally:
             self._syncing = False
 
         self._update_icons()
         self._render_results()
+        autosize_table_headers(self.adjustments_table, stretch_last=True)
+        autosize_table_headers(self.batch_table, stretch_last=True)
 
     def refresh_from_state(self) -> None:
         self._syncing = True
@@ -704,6 +743,9 @@ class SolverResultsView(QWidget):
             elif ged.verdict == GEDVerdict.WARNING:
                 self.ged_verdict_banner.setText(self._i18n.t("step05.verdict_warning_msg"))
                 apply_status_role(self.ged_verdict_banner, "warning")
+            elif str(ged.verdict.value) == "skipped":
+                self.ged_verdict_banner.setText(self._i18n.t("enums.ged_verdict.skipped"))
+                apply_status_role(self.ged_verdict_banner, "pending")
             else:
                 self.ged_verdict_banner.setText(self._i18n.t("step05.verdict_fail_msg"))
                 apply_status_role(self.ged_verdict_banner, "error")
@@ -812,17 +854,24 @@ class SolverResultsView(QWidget):
             self.batch_fail_lbl.setText(
                 f"{self._i18n.t('step05.batch_fail')}: {batch.summary_fail_count}"
             )
+            skipped_count = getattr(batch, "summary_skipped_count", 0)
+            self.batch_skipped_lbl.setText(
+                f"{self._i18n.t('step05.batch_skipped')}: {skipped_count}"
+            )
             self.batch_mean_lbl.setText(
                 f"{self._i18n.t('step05.batch_mean_chi2')}: {batch.mean_chi2:.3f}"
             )
             self.batch_table.setRowCount(len(batch.results))
             for r, res in enumerate(batch.results):
                 v = res.ged.verdict
-                v_color = (
-                    palette["validated"]
-                    if v == GEDVerdict.PASS
-                    else (palette["warning"] if v == GEDVerdict.WARNING else palette["error"])
-                )
+                if v == GEDVerdict.PASS:
+                    v_color = palette["validated"]
+                elif v == GEDVerdict.WARNING:
+                    v_color = palette["warning"]
+                elif str(v.value) == "skipped":
+                    v_color = palette["pending"]
+                else:
+                    v_color = palette["error"]
                 self.batch_table.setItem(r, 0, make_text_item(res.period_id, mono=True))
                 self.batch_table.setItem(
                     r, 1, make_numeric_item(res.ged.objective_j, fmt="{:.3f}")
@@ -850,6 +899,8 @@ class SolverResultsView(QWidget):
                 )
         else:
             self.batch_group.setVisible(False)
+        autosize_table_headers(self.adjustments_table, stretch_last=True)
+        autosize_table_headers(self.batch_table, stretch_last=True)
 
     def build_inspector_payload(self) -> InspectorPayload:
         result = self._state.reconciliation_result

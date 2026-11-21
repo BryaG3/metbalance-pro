@@ -10,14 +10,17 @@ from typing import Callable, Optional
 
 import numpy as np
 import scipy.optimize
+import scipy.stats
 
 from .models import (
     BatchReconciliationResult,
     CircuitSpec,
+    GEDReport,
     GEDVerdict,
     MeasurementPoint,
     OutlierComparisonResult,
     ReconciliationResult,
+    StreamRole,
     UncertaintyModel,
     make_assay_var_key,
     make_mass_var_key,
@@ -33,6 +36,40 @@ from .topology import build_incidence_matrix
 
 def _is_finite_meas(value: Optional[float]) -> bool:
     return value is not None and math.isfinite(float(value))
+
+
+def _is_no_flow_period(circuit: CircuitSpec, point: MeasurementPoint) -> bool:
+    """Return True when the period represents a non-operational / zero-flow shift."""
+    feed_streams = [s for s in circuit.streams if s.role == StreamRole.FEED]
+    if not feed_streams:
+        feed_streams = [s for s in circuit.streams if s.from_node is None]
+
+    measured_feed_flows: list[float] = []
+    for s in feed_streams:
+        raw = point.mass_flows.get(s.id)
+        if _is_finite_meas(raw):
+            val = float(raw)  # type: ignore[arg-type]
+            if val <= 0.0:
+                return True
+            measured_feed_flows.append(val)
+
+    if (
+        feed_streams
+        and len(measured_feed_flows) == len(feed_streams)
+        and sum(measured_feed_flows) <= 0.0
+    ):
+        return True
+
+    all_measured_flows: list[float] = []
+    for s in circuit.streams:
+        raw = point.mass_flows.get(s.id)
+        if _is_finite_meas(raw):
+            all_measured_flows.append(float(raw))  # type: ignore[arg-type]
+
+    if all_measured_flows and all(v <= 0.0 for v in all_measured_flows):
+        return True
+
+    return False
 
 
 def _compute_initial_guess(
@@ -396,6 +433,7 @@ def reconcile_period(
         adjustments=adjustments,
         ged=ged_report,
         excluded_outliers=excluded_list,
+        status="OK",
     )
 
 
@@ -408,9 +446,40 @@ def reconcile_batch(
     """Reconcile a sequence of measurement periods and aggregate GED statistics."""
     results: list[ReconciliationResult] = []
     total = len(periods)
+    alpha = float(uncertainty_model.alpha)
+    z_crit = float(scipy.stats.norm.ppf(1.0 - alpha / 2.0))
 
     for idx, period in enumerate(periods):
-        res = reconcile_period(circuit, period, uncertainty_model)
+        if _is_no_flow_period(circuit, period):
+            res = ReconciliationResult(
+                period_id=period.period_id,
+                converged=False,
+                solver_used="SKIPPED_NO_FLOW",
+                iterations=0,
+                max_mass_residual=0.0,
+                max_species_residual=0.0,
+                reconciled_mass_flows={s.id: 0.0 for s in circuit.streams},
+                reconciled_assays={
+                    s.id: {sp.id: 0.0 for sp in circuit.species}
+                    for s in circuit.streams
+                },
+                adjustments=[],
+                ged=GEDReport(
+                    objective_j=0.0,
+                    degrees_of_freedom=0,
+                    alpha=alpha,
+                    chi2_critical=0.0,
+                    p_value=1.0,
+                    z_critical=z_crit,
+                    verdict=GEDVerdict.SKIPPED,
+                    suspect_variables=[],
+                    max_abs_z_variable=None,
+                    max_abs_z_value=0.0,
+                ),
+                status="SKIPPED_NO_FLOW",
+            )
+        else:
+            res = reconcile_period(circuit, period, uncertainty_model)
         results.append(res)
         if progress_callback is not None:
             progress_callback(idx + 1, total)
@@ -418,8 +487,18 @@ def reconcile_batch(
     pass_count = sum(1 for r in results if r.ged.verdict == GEDVerdict.PASS)
     warning_count = sum(1 for r in results if r.ged.verdict == GEDVerdict.WARNING)
     fail_count = sum(1 for r in results if r.ged.verdict == GEDVerdict.FAIL)
+    skipped_count = sum(
+        1
+        for r in results
+        if r.status == "SKIPPED_NO_FLOW" or r.ged.verdict == GEDVerdict.SKIPPED
+    )
+    valid = [
+        r
+        for r in results
+        if r.status != "SKIPPED_NO_FLOW" and r.ged.verdict != GEDVerdict.SKIPPED
+    ]
     mean_chi2 = (
-        float(np.mean([r.ged.objective_j for r in results])) if results else 0.0
+        float(np.mean([r.ged.objective_j for r in valid])) if valid else 0.0
     )
 
     return BatchReconciliationResult(
@@ -427,6 +506,7 @@ def reconcile_batch(
         summary_pass_count=pass_count,
         summary_warning_count=warning_count,
         summary_fail_count=fail_count,
+        summary_skipped_count=skipped_count,
         mean_chi2=mean_chi2,
     )
 
@@ -456,6 +536,7 @@ def compare_with_without_outlier(
         GEDVerdict.FAIL: 2,
         GEDVerdict.WARNING: 1,
         GEDVerdict.PASS: 0,
+        GEDVerdict.SKIPPED: 0,
     }
     verdict_improved = bool(
         severity_rank[without_outlier.ged.verdict]

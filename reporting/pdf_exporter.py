@@ -10,11 +10,14 @@ import io
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from xml.sax.saxutils import escape as xml_escape
 
 import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from PIL import Image as PILImage
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -96,6 +99,8 @@ _PDF_TEXT: dict[str, dict[str, str]] = {
         "no": "No",
         "mass_flow_lbl": "Flujo Másico",
         "none_txt": "Ninguna",
+        "description": "Descripción",
+        "verdict_skipped": "Omitido (Sin Flujo)",
     },
     "en": {
         "company": "Company",
@@ -148,6 +153,8 @@ _PDF_TEXT: dict[str, dict[str, str]] = {
         "no": "No",
         "mass_flow_lbl": "Mass Flow",
         "none_txt": "None",
+        "description": "Description",
+        "verdict_skipped": "Skipped (No Flow)",
     },
 }
 
@@ -188,6 +195,50 @@ def _fmt_num(val: Optional[float], decimals: int = 4) -> str:
     if val is None:
         return "-"
     return f"{val:.{decimals}f}"
+
+
+def _is_skipped_result(res: ReconciliationResult) -> bool:
+    """Return True if a reconciliation result was skipped due to zero/no flow."""
+    status = str(getattr(res, "status", "OK") or "OK").upper()
+    if status == "SKIPPED_NO_FLOW":
+        return True
+    verdict_val = getattr(res.ged.verdict, "value", str(res.ged.verdict))
+    return str(verdict_val).lower() == "skipped"
+
+
+def _verdict_display_text(
+    i18n: I18nManager,
+    verdict: Any,
+    txt: dict[str, str],
+    is_skipped: bool = False,
+) -> str:
+    """Return localized verdict text, handling SKIPPED defensively."""
+    verdict_val = "skipped" if is_skipped else str(getattr(verdict, "value", verdict)).lower()
+    key = f"enums.ged_verdict.{verdict_val}"
+    translated = i18n.t(key)
+    if translated == key and verdict_val == "skipped":
+        return txt["verdict_skipped"]
+    return translated
+
+
+def _p(text: Any, style: ParagraphStyle) -> Paragraph:
+    """Wrap arbitrary text safely in a ReportLab Paragraph for clean column wrapping."""
+    return Paragraph(xml_escape(str(text)), style)
+
+
+def _rl_image_from_png_buf(buf: io.BytesIO, max_w: float, max_h: float) -> RLImage:
+    """Create a ReportLab Image preserving the exact rendered PNG aspect ratio."""
+    buf.seek(0)
+    with PILImage.open(buf) as pil_img:
+        orig_w, orig_h = pil_img.size
+    buf.seek(0)
+    if orig_w > 0 and orig_h > 0:
+        scale = min(max_w / float(orig_w), max_h / float(orig_h))
+        width = orig_w * scale
+        height = orig_h * scale
+    else:
+        width, height = max_w, max_h
+    return RLImage(buf, width=width, height=height)
 
 
 def _render_parity_png(
@@ -251,10 +302,10 @@ def _render_parity_png(
     ax.tick_params(labelsize=7.5, colors="#475569")
     ax.grid(True, linestyle=":", alpha=0.5, color="#CBD5E1")
     ax.legend(fontsize=7, frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1")
-    fig.tight_layout()
+    fig.tight_layout(pad=1.4)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=300)
+    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight", pad_inches=0.18)
     buf.seek(0)
     return buf
 
@@ -271,7 +322,8 @@ def _render_adjustments_png(
     labels: list[str] = []
     pcts: list[float] = []
     bar_colors: list[str] = []
-    z_crit = result.ged.z_critical
+    z_crit = float(result.ged.z_critical) if result.ged.z_critical > 0 else 1.959964
+    z_warn = 1.644854 if z_crit > 1.644854 else min(1.644854, z_crit * 0.85)
 
     for adj in result.adjustments:
         if adj.measured is None or adj.relative_pct is None:
@@ -281,7 +333,7 @@ def _render_adjustments_png(
         abs_z = abs(adj.z_score) if adj.z_score is not None else 0.0
         if abs_z > z_crit:
             bar_colors.append("#B91C1C")
-        elif abs_z > 2.0:
+        elif abs_z > z_warn:
             bar_colors.append("#B45309")
         else:
             bar_colors.append("#1B4965")
@@ -297,10 +349,10 @@ def _render_adjustments_png(
     ax.set_ylabel(i18n.t("step06.charts.adj_y"), fontsize=8, color="#334155")
     ax.tick_params(axis="y", labelsize=7.5, colors="#475569")
     ax.grid(True, axis="y", linestyle=":", alpha=0.5, color="#CBD5E1")
-    fig.tight_layout()
+    fig.tight_layout(pad=1.4)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=300)
+    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight", pad_inches=0.18)
     buf.seek(0)
     return buf
 
@@ -310,19 +362,20 @@ def _render_chi2_control_png(
     i18n: I18nManager,
     primary_hex: str,
 ) -> io.BytesIO:
-    """Render 300 DPI Chi2 Statistical Control Chart across batch periods."""
+    """Render 300 DPI Chi2 Statistical Control Chart across valid batch periods (excluding NO_FLOW)."""
     fig = Figure(figsize=(6.4, 3.2), dpi=300)
     FigureCanvasAgg(fig)
     ax = fig.add_subplot(111)
 
-    periods = [r.period_id for r in batch_result.results]
-    j_vals = [r.ged.objective_j for r in batch_result.results]
-    chi_crit = batch_result.results[0].ged.chi2_critical if batch_result.results else 0.0
-    alpha = batch_result.results[0].ged.alpha if batch_result.results else 0.05
+    valid_results = [r for r in batch_result.results if not _is_skipped_result(r)]
+    periods = [r.period_id for r in valid_results]
+    j_vals = [r.ged.objective_j for r in valid_results]
+    chi_crit = valid_results[0].ged.chi2_critical if valid_results else 0.0
+    alpha = valid_results[0].ged.alpha if valid_results else 0.05
 
-    x_pos = np.arange(len(periods))
-    ax.plot(x_pos, j_vals, color=primary_hex, marker="o", markersize=3.2, linewidth=1.2, label=i18n.t("step06.charts.trends_chi2_series"))
-    if batch_result.results:
+    if periods:
+        x_pos = np.arange(len(periods))
+        ax.plot(x_pos, j_vals, color=primary_hex, marker="o", markersize=3.2, linewidth=1.2, label=i18n.t("step06.charts.trends_chi2_series"))
         ax.axhline(
             chi_crit,
             color="#B91C1C",
@@ -330,20 +383,20 @@ def _render_chi2_control_png(
             linewidth=1.1,
             label=i18n.t("step06.charts.trends_chi2_crit", alpha=alpha),
         )
+        step = max(1, len(periods) // 12)
+        ax.set_xticks(x_pos[::step])
+        ax.set_xticklabels(periods[::step], rotation=40, ha="right", fontsize=6.8, color="#334155")
+        ax.legend(fontsize=7, frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1")
 
-    step = max(1, len(periods) // 12)
-    ax.set_xticks(x_pos[::step])
-    ax.set_xticklabels(periods[::step], rotation=40, ha="right", fontsize=6.8, color="#334155")
     ax.set_title(i18n.t("step06.charts.trends_chi2_title"), fontsize=9.5, fontweight="bold", color="#1E293B")
     ax.set_xlabel(i18n.t("step06.charts.trends_chi2_x"), fontsize=8, color="#334155")
     ax.set_ylabel(i18n.t("step06.charts.trends_chi2_y"), fontsize=8, color="#334155")
     ax.tick_params(axis="y", labelsize=7.5, colors="#475569")
     ax.grid(True, linestyle=":", alpha=0.5, color="#CBD5E1")
-    ax.legend(fontsize=7, frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1")
-    fig.tight_layout()
+    fig.tight_layout(pad=1.4)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=300)
+    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight", pad_inches=0.18)
     buf.seek(0)
     return buf
 
@@ -440,10 +493,11 @@ def export_to_pdf(
             page_h - 19.5 * mm,
             f"{branding.mining_unit} | {txt['doc_code']}: {branding.document_code}",
         )
+        hdr_circuit = circuit.name if len(circuit.name) <= 48 else f"{circuit.name[:45]}..."
         canv.drawRightString(
             page_w - right_m,
             page_h - 23.2 * mm,
-            f"{txt['circuit']}: {circuit.name} | {txt['period']}: {reconciliation_result.period_id}",
+            f"{txt['circuit']}: {hdr_circuit} | {txt['period']}: {reconciliation_result.period_id}",
         )
 
         canv.setStrokeColor(colors.HexColor("#CBD5E1"))
@@ -519,16 +573,41 @@ def export_to_pdf(
         leading=10,
         textColor=colors.HexColor("#1E293B"),
     )
+    meta_val_style = ParagraphStyle(
+        "MBPMetaVal",
+        parent=base_styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.6,
+        leading=9.6,
+        textColor=colors.HexColor("#1E293B"),
+    )
+    cell_style = ParagraphStyle(
+        "MBPCell",
+        parent=base_styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.2,
+        leading=9.2,
+        textColor=colors.HexColor("#1E293B"),
+    )
+    cell_header_style = ParagraphStyle(
+        "MBPCellHeader",
+        parent=base_styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=7.2,
+        leading=9.0,
+        textColor=colors.white,
+        alignment=TA_CENTER,
+    )
 
     story: list[Any] = []
     story.append(Paragraph(i18n.t("report.pdf_title"), title_style))
     story.append(Paragraph(i18n.t("report.pdf_subtitle"), subtitle_style))
 
-    # Executive corporate summary metadata table
+    # Executive corporate summary metadata table (wrapped Paragraphs prevent overflow)
     exec_meta = [
-        [txt["company"], branding.company_name, txt["doc_code"], branding.document_code],
-        [txt["unit"], branding.mining_unit, txt["lead"], branding.technical_lead],
-        [txt["circuit"], circuit.name, txt["period"], reconciliation_result.period_id],
+        [txt["company"], _p(branding.company_name, meta_val_style), txt["doc_code"], _p(branding.document_code, meta_val_style)],
+        [txt["unit"], _p(branding.mining_unit, meta_val_style), txt["lead"], _p(branding.technical_lead, meta_val_style)],
+        [txt["circuit"], _p(circuit.name, meta_val_style), txt["period"], _p(reconciliation_result.period_id, meta_val_style)],
     ]
     meta_tbl = Table(
         exec_meta,
@@ -542,6 +621,7 @@ def export_to_pdf(
                 ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
                 ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
                 ("FONTSIZE", (0, 0), (-1, -1), 7.8),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#1E293B")),
                 ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E1")),
                 ("TOPPADDING", (0, 0), (-1, -1), 3.5),
@@ -552,23 +632,39 @@ def export_to_pdf(
     story.append(meta_tbl)
     story.append(Spacer(1, 5))
 
-    # Section 1: Topology & Incidence Matrix A
+    # Section 1: Topology & Incidence Matrix A (wrapped text cells prevent overflow)
     story.append(Paragraph(i18n.t("report.pdf_topology_section"), section_style))
     matrix_a, node_ids, stream_ids = build_incidence_matrix(circuit)
+    species_summary = ", ".join(f"{sp.id} ({sp.unit.value})" for sp in circuit.species)
     story.append(
         _styled_table(
-            [[txt["circuit"], txt["mass_unit"], txt["nodes_streams_species"], txt["species"]],
-             [circuit.name, circuit.mass_unit.value, f"{len(node_ids)} / {len(stream_ids)} / {len(circuit.species)}", ", ".join(f"{sp.id} ({sp.unit.value})" for sp in circuit.species)]],
-            [usable_w * 0.25, usable_w * 0.18, usable_w * 0.25, usable_w * 0.32],
+            [
+                [
+                    _p(txt["circuit"], cell_header_style),
+                    _p(txt["mass_unit"], cell_header_style),
+                    _p(txt["nodes_streams_species"], cell_header_style),
+                    _p(txt["species"], cell_header_style),
+                ],
+                [
+                    _p(circuit.name, cell_style),
+                    _p(circuit.mass_unit.value, cell_style),
+                    f"{len(node_ids)} / {len(stream_ids)} / {len(circuit.species)}",
+                    _p(species_summary, cell_style),
+                ],
+            ],
+            [usable_w * 0.28, usable_w * 0.17, usable_w * 0.23, usable_w * 0.32],
             primary_color,
         )
     )
+    if (circuit.description or "").strip():
+        story.append(Spacer(1, 3))
+        story.append(Paragraph(f"<b>{xml_escape(txt['description'])}:</b> {xml_escape(circuit.description)}", body_style))
     story.append(Spacer(1, 4))
 
-    inc_header = [txt["node"]] + stream_ids
+    inc_header = [_p(txt["node"], cell_header_style)] + [_p(sid, cell_header_style) for sid in stream_ids]
     inc_data: list[list[Any]] = [inc_header]
     for r_idx, nid in enumerate(node_ids):
-        inc_data.append([nid] + [f"{int(round(matrix_a[r_idx, c_idx])):d}" for c_idx in range(len(stream_ids))])
+        inc_data.append([_p(nid, cell_style)] + [f"{int(round(matrix_a[r_idx, c_idx])):d}" for c_idx in range(len(stream_ids))])
     n_cols = len(inc_header)
     first_w = min(28 * mm, usable_w * 0.22)
     rem_w = (usable_w - first_w) / max(n_cols - 1, 1)
@@ -582,27 +678,28 @@ def export_to_pdf(
         )
     )
 
-    # Section 2: Metallurgical KPIs
+    # Section 2: Metallurgical KPIs (explicit mass unit in fine metal header)
     story.append(Paragraph(i18n.t("report.pdf_kpi_section"), section_style))
     feed_str = f"{_fmt_num(kpi_report.feed_mass_nom, 2)} / {_fmt_num(kpi_report.feed_mass_rec, 2)} {circuit.mass_unit.value}"
     unexp_str = f"{_fmt_num(kpi_report.unexplained_mass_nom, 3)} / {_fmt_num(kpi_report.unexplained_mass_rec, 6)} {circuit.mass_unit.value}"
     story.append(Paragraph(f"<b>{txt['feed_mass']}:</b> {feed_str} &nbsp;&nbsp;|&nbsp;&nbsp; <b>{txt['unexplained']}:</b> {unexp_str}", body_style))
 
+    fine_rec_header = f"{txt['fine_rec']} ({circuit.mass_unit.value})"
     kpi_rows: list[list[Any]] = [[
-        txt["stream"],
-        txt["species"],
-        txt["mass_pull_nom"],
-        txt["mass_pull_rec"],
-        txt["conc_ratio"],
-        txt["fine_rec"],
-        txt["rec_nom"],
-        txt["rec_rec"],
+        _p(txt["stream"], cell_header_style),
+        _p(txt["species"], cell_header_style),
+        _p(txt["mass_pull_nom"], cell_header_style),
+        _p(txt["mass_pull_rec"], cell_header_style),
+        _p(txt["conc_ratio"], cell_header_style),
+        _p(fine_rec_header, cell_header_style),
+        _p(txt["rec_nom"], cell_header_style),
+        _p(txt["rec_rec"], cell_header_style),
     ]]
     for prod in kpi_report.products:
         for sp in circuit.species:
             kpi_rows.append([
-                prod.stream_name,
-                f"{sp.id} ({sp.unit.value})",
+                _p(prod.stream_name, cell_style),
+                _p(f"{sp.id} ({sp.unit.value})", cell_style),
                 _fmt_num(prod.mass_pull_nom_pct, 2),
                 _fmt_num(prod.mass_pull_rec_pct, 2),
                 _fmt_num(prod.conc_ratio_rec, 2),
@@ -613,7 +710,7 @@ def export_to_pdf(
     story.append(
         _styled_table(
             kpi_rows,
-            [usable_w * 0.18, usable_w * 0.14, usable_w * 0.11, usable_w * 0.11, usable_w * 0.11, usable_w * 0.12, usable_w * 0.115, usable_w * 0.115],
+            [usable_w * 0.18, usable_w * 0.13, usable_w * 0.105, usable_w * 0.105, usable_w * 0.105, usable_w * 0.145, usable_w * 0.115, usable_w * 0.115],
             primary_color,
             mono_cols={2, 3, 4, 5, 6, 7},
             right_cols={2, 3, 4, 5, 6, 7},
@@ -656,7 +753,8 @@ def export_to_pdf(
     # Section 4: GED Diagnostics
     story.append(Paragraph(i18n.t("report.pdf_ged_section"), section_style))
     ged = reconciliation_result.ged
-    verdict_text = i18n.t(f"enums.ged_verdict.{ged.verdict.value}")
+    res_is_skipped = _is_skipped_result(reconciliation_result)
+    verdict_text = _verdict_display_text(i18n, ged.verdict, txt, is_skipped=res_is_skipped)
     ged_summary_rows = [
         [txt["metric"], txt["value"], txt["metric"], txt["value"]],
         [i18n.t("step05.objective_j"), _fmt_num(ged.objective_j, 4), i18n.t("step05.chi2_critical"), _fmt_num(ged.chi2_critical, 4)],
@@ -671,11 +769,15 @@ def export_to_pdf(
         mono_cols={1, 3},
         right_cols={1, 3},
     )
-    verdict_bg = (
-        colors.HexColor("#DCFCE7")
-        if ged.verdict == GEDVerdict.PASS
-        else (colors.HexColor("#FEF3C7") if ged.verdict == GEDVerdict.WARNING else colors.HexColor("#FEE2E2"))
-    )
+    verdict_str = "skipped" if res_is_skipped else str(getattr(ged.verdict, "value", ged.verdict)).lower()
+    if verdict_str == "skipped":
+        verdict_bg = colors.HexColor("#E2E8F0")
+    elif verdict_str == "pass":
+        verdict_bg = colors.HexColor("#DCFCE7")
+    elif verdict_str == "warning":
+        verdict_bg = colors.HexColor("#FEF3C7")
+    else:
+        verdict_bg = colors.HexColor("#FEE2E2")
     ged_tbl.setStyle(TableStyle([("BACKGROUND", (3, 3), (3, 3), verdict_bg)]))
     story.append(ged_tbl)
     story.append(Spacer(1, 4))
@@ -736,14 +838,14 @@ def export_to_pdf(
 
     parity_buf = _render_parity_png(reconciliation_result, i18n, primary_hex)
     adj_buf = _render_adjustments_png(reconciliation_result, i18n)
-    story.append(RLImage(parity_buf, width=usable_w * 0.94, height=usable_w * 0.94 * 3.6 / 6.4))
+    story.append(_rl_image_from_png_buf(parity_buf, usable_w * 0.94, usable_w * 0.94 * 3.8 / 6.4))
     story.append(Spacer(1, 5))
-    story.append(RLImage(adj_buf, width=usable_w * 0.94, height=usable_w * 0.94 * 3.6 / 6.4))
+    story.append(_rl_image_from_png_buf(adj_buf, usable_w * 0.94, usable_w * 0.94 * 3.8 / 6.4))
 
-    if batch_result is not None and batch_result.results:
+    if batch_result is not None and any(not _is_skipped_result(r) for r in batch_result.results):
         story.append(Spacer(1, 5))
         chi_buf = _render_chi2_control_png(batch_result, i18n, primary_hex)
-        story.append(RLImage(chi_buf, width=usable_w * 0.94, height=usable_w * 0.94 * 3.2 / 6.4))
+        story.append(_rl_image_from_png_buf(chi_buf, usable_w * 0.94, usable_w * 0.94 * 3.5 / 6.4))
 
     # Section 7: AMIRA P754 Traceability & Audit Seal
     story.append(Paragraph(i18n.t("report.pdf_traceability_section"), section_style))

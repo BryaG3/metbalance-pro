@@ -330,3 +330,93 @@ def test_bare_tms_guardia_maps_to_feed(tmp_path: Path) -> None:
     tms_map = _find_suggestion(profile, "TMS/guardia")
     assert tms_map.target_stream_id == "Cabeza"
     assert tms_map.is_mass_flow is True
+
+
+def test_recovery_and_unknown_element_columns_not_mapped_as_mass_flow(tmp_path: Path) -> None:
+    """Verify recovery columns and unknown-element stream columns are never mapped as mass flows."""
+    circuit = get_circuit_template("polymetallic_4prod")
+    csv_path = tmp_path / "rec_and_unknown.csv"
+    csv_path.write_text(
+        "Guardia,Cabeza_TMS/guardia,ConCu_TMS/guardia,En_Cu_cbz_%,ConCu_Cu_%,"
+        "Rec_As_ConCu,Rec_Cu,Recup_Cu_ConCu,Recup_Zn,Recovery_Pb,Recuperación_Ag_ConPb,"
+        "ConCu_As,ConCu_As_%\n"
+        "G-01,1500.0,45.0,1.15,26.4,12.5,88.2,88.2,82.1,79.4,65.0,0.42,0.42\n",
+        encoding="utf-8",
+    )
+    _df, profile = profile_file(csv_path, circuit)
+
+    recovery_cols = (
+        "Rec_As_ConCu",
+        "Rec_Cu",
+        "Recup_Cu_ConCu",
+        "Recup_Zn",
+        "Recovery_Pb",
+        "Recuperación_Ag_ConPb",
+    )
+    for col in recovery_cols:
+        sug = _find_suggestion(profile, col)
+        assert col in profile.non_metallurgical_columns
+        assert sug.is_non_metallurgical is True
+        assert sug.is_mass_flow is False
+        assert sug.target_stream_id is None
+        assert sug.target_species_id is None
+        assert sug.confidence == 0.0
+
+    for unknown_col in ("ConCu_As", "ConCu_As_%"):
+        sug = _find_suggestion(profile, unknown_col)
+        assert sug.is_mass_flow is False
+        assert sug.target_stream_id is None
+        assert sug.target_species_id is None
+
+    head_mass = _find_suggestion(profile, "Cabeza_TMS/guardia")
+    assert head_mass.target_stream_id == "Cabeza"
+    assert head_mass.is_mass_flow is True
+
+    concu_mass = _find_suggestion(profile, "ConCu_TMS/guardia")
+    assert concu_mass.target_stream_id == "ConCu"
+    assert concu_mass.is_mass_flow is True
+
+
+def test_zero_or_negative_mass_flow_detected_and_omitted(tmp_path: Path) -> None:
+    """Verify TMS/guardia <= 0 or missing feed flow emits ZERO_OR_NEGATIVE_FLOW and is omitted when enabled."""
+    circuit = get_circuit_template("polymetallic_4prod")
+    csv_path = tmp_path / "zero_flow_shifts.csv"
+    csv_path.write_text(
+        "Guardia,TMS/guardia,En_Cu_cbz_%,ConCu_Cu_%,Rlv_Cu_%\n"
+        "G-01,1500.0,1.10,26.0,0.10\n"
+        "G-02,0,1.12,25.8,0.11\n"
+        "G-03,-15.0,1.08,26.2,0.12\n"
+        "G-04,,1.15,26.1,0.10\n"
+        "G-05,1480.0,1.14,26.5,0.09\n",
+        encoding="utf-8",
+    )
+    raw_df, profile = profile_file(csv_path, circuit)
+
+    zero_flow_anomalies = [
+        a for a in profile.anomalies if a.anomaly_type == "ZERO_OR_NEGATIVE_FLOW"
+    ]
+    flagged_rows = {a.row_index for a in zero_flow_anomalies}
+    assert flagged_rows == {1, 2, 3}
+    assert all(a.column == "TMS/guardia" for a in zero_flow_anomalies)
+    assert all(a.severity == "error" for a in zero_flow_anomalies)
+
+    plan = build_default_cleaning_plan(profile)
+    assert plan.drop_zero_or_negative_flow is True
+    plan.confirmed = True
+
+    cleaned = apply_cleaning_plan(raw_df, profile, circuit, plan)
+    assert cleaned.raw_row_count == 5
+    assert cleaned.clean_row_count == 2
+    assert [p.period_id for p in cleaned.periods] == ["G-01", "G-05"]
+
+    drop_entries = [e for e in cleaned.audit_log if e.action == "drop_zero_or_negative_flow"]
+    assert len(drop_entries) == 1
+    assert drop_entries[0].affected_rows == 3
+
+    # When disabled, zero/missing shifts remain in CleanedDataset for downstream handling.
+    keep_plan = plan.model_copy(update={"drop_zero_or_negative_flow": False})
+    cleaned_kept = apply_cleaning_plan(raw_df, profile, circuit, keep_plan)
+    assert cleaned_kept.clean_row_count == 5
+    assert cleaned_kept.periods[1].period_id == "G-02"
+    assert cleaned_kept.periods[1].mass_flows["Cabeza"] == pytest.approx(0.0)
+    assert not any(e.action == "drop_zero_or_negative_flow" for e in cleaned_kept.audit_log)

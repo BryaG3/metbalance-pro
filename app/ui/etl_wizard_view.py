@@ -35,10 +35,13 @@ from .ui_common import (
     FlowLayout,
     InspectorPayload,
     ProjectState,
+    TableInspectorDialog,
     apply_status_role,
+    autosize_table_headers,
     configure_dense_table,
     get_theme_palette,
     load_svg_icon,
+    make_expand_table_button,
     make_numeric_item,
     make_text_item,
     monospace_font,
@@ -143,10 +146,14 @@ class ETLWizardView(QWidget):
         # Tab 1: Anomalies
         anom_tab = QWidget(self.tabs)
         anom_layout = QVBoxLayout(anom_tab)
+        anom_top = QHBoxLayout()
         self.anomalies_banner = QLabel(anom_tab)
         self.anomalies_banner.setContentsMargins(6, 4, 6, 4)
         apply_status_role(self.anomalies_banner, "pending")
-        anom_layout.addWidget(self.anomalies_banner)
+        self.expand_anomalies_btn = make_expand_table_button(anom_tab, self._theme)
+        anom_top.addWidget(self.anomalies_banner, 1)
+        anom_top.addWidget(self.expand_anomalies_btn)
+        anom_layout.addLayout(anom_top)
 
         self.anomalies_table = QTableWidget(0, 7, anom_tab)
         self.anomalies_table.setObjectName("ETLAnomaliesTable")
@@ -157,6 +164,12 @@ class ETLWizardView(QWidget):
         # Tab 2: Assisted Column Mapping
         map_tab = QWidget(self.tabs)
         map_layout = QVBoxLayout(map_tab)
+        map_top = QHBoxLayout()
+        map_top.addStretch(1)
+        self.expand_mapping_btn = make_expand_table_button(map_tab, self._theme)
+        map_top.addWidget(self.expand_mapping_btn)
+        map_layout.addLayout(map_top)
+
         self.mapping_table = QTableWidget(0, 6, map_tab)
         self.mapping_table.setObjectName("ETLMappingTable")
         configure_dense_table(
@@ -189,6 +202,13 @@ class ETLWizardView(QWidget):
         checks_row2.addWidget(self.chk_convert_units)
         checks_row2.addWidget(self.chk_drop_non_met)
         plan_grid.addLayout(checks_row2)
+
+        checks_row3 = QHBoxLayout()
+        self.chk_drop_zero_flow = QCheckBox(self.plan_group)
+        self.chk_drop_zero_flow.setChecked(True)
+        checks_row3.addWidget(self.chk_drop_zero_flow)
+        checks_row3.addStretch(1)
+        plan_grid.addLayout(checks_row3)
 
         strat_row = QHBoxLayout()
         self.missing_strategy_lbl = QLabel(self.plan_group)
@@ -238,8 +258,28 @@ class ETLWizardView(QWidget):
         self.sample_b_btn.clicked.connect(lambda: self.load_sample_dataset("b"))
         self.sheet_combo.currentIndexChanged.connect(self._on_sheet_changed)
         self.apply_cleaning_btn.clicked.connect(self.apply_and_validate)
+        self.expand_anomalies_btn.clicked.connect(self._on_expand_anomalies)
+        self.expand_mapping_btn.clicked.connect(self._on_expand_mapping)
         self.prev_btn.clicked.connect(self.prev_step_requested.emit)
         self.next_btn.clicked.connect(self._on_next_clicked)
+
+    def _on_expand_anomalies(self) -> None:
+        dlg = TableInspectorDialog(
+            self.anomalies_table,
+            self._i18n.t("step02.section_anomalies"),
+            theme=self._theme,
+            parent=self,
+        )
+        dlg.exec()
+
+    def _on_expand_mapping(self) -> None:
+        dlg = TableInspectorDialog(
+            self.mapping_table,
+            self._i18n.t("step02.section_mapping"),
+            theme=self._theme,
+            parent=self,
+        )
+        dlg.exec()
 
     def set_theme(self, theme: str) -> None:
         self._theme = theme
@@ -255,6 +295,9 @@ class ETLWizardView(QWidget):
         self.apply_cleaning_btn.setIcon(
             load_svg_icon("check_circle.svg", self._theme, color_override="#FFFFFF", size=16)
         )
+        expand_icon = load_svg_icon("reset_layout.svg", self._theme, size=14)
+        self.expand_anomalies_btn.setIcon(expand_icon)
+        self.expand_mapping_btn.setIcon(expand_icon)
 
     def retranslate_ui(self) -> None:
         self._syncing = True
@@ -301,6 +344,9 @@ class ETLWizardView(QWidget):
             self.chk_out_of_range.setText(self._i18n.t("step02.nullify_out_of_range"))
             self.chk_convert_units.setText(self._i18n.t("step02.convert_units"))
             self.chk_drop_non_met.setText(self._i18n.t("step02.drop_non_metallurgical"))
+            self.chk_drop_zero_flow.setText(self._i18n.t("step02.drop_zero_or_negative_flow"))
+            self.expand_anomalies_btn.setText(self._i18n.t("common.expand_table"))
+            self.expand_mapping_btn.setText(self._i18n.t("common.expand_table"))
             self.missing_strategy_lbl.setText(self._i18n.t("step02.missing_strategy_label"))
 
             cur_strat = self.missing_strategy_combo.currentData() or "keep_as_unmeasured"
@@ -336,6 +382,9 @@ class ETLWizardView(QWidget):
 
         self._update_icons()
         self.refresh_from_state()
+        autosize_table_headers(self.anomalies_table, stretch_last=True)
+        autosize_table_headers(self.mapping_table, stretch_last=True)
+        autosize_table_headers(self.audit_table, stretch_last=True)
 
     def _on_browse_file(self) -> None:
         start_dir = self._settings.get_last_directory() or str(SAMPLE_DATA_DIR)
@@ -489,12 +538,14 @@ class ETLWizardView(QWidget):
         report = self._state.profile_report
         if report is None:
             self.anomalies_table.setRowCount(0)
+            autosize_table_headers(self.anomalies_table, stretch_last=True)
             return
         anomalies = report.anomalies
         if not anomalies:
             self.anomalies_banner.setText(self._i18n.t("step02.no_anomalies"))
             apply_status_role(self.anomalies_banner, "validated")
             self.anomalies_table.setRowCount(0)
+            autosize_table_headers(self.anomalies_table, stretch_last=True)
             return
 
         self.anomalies_banner.setText(
@@ -526,11 +577,13 @@ class ETLWizardView(QWidget):
             )
             self.anomalies_table.setItem(r, 5, make_text_item(anom.detail))
             self.anomalies_table.setItem(r, 6, make_text_item(anom.suggested_action))
+        autosize_table_headers(self.anomalies_table, stretch_last=True)
 
     def _populate_mapping_table(self) -> None:
         plan = self._state.cleaning_plan
         if plan is None:
             self.mapping_table.setRowCount(0)
+            autosize_table_headers(self.mapping_table, stretch_last=True)
             return
 
         self._syncing = True
@@ -588,6 +641,7 @@ class ETLWizardView(QWidget):
                 )
         finally:
             self._syncing = False
+        autosize_table_headers(self.mapping_table, stretch_last=True)
 
     def _on_map_stream_changed(self, row: int, cb: QComboBox) -> None:
         if self._syncing or self._state.cleaning_plan is None:
@@ -621,6 +675,9 @@ class ETLWizardView(QWidget):
             self.chk_out_of_range.setChecked(plan.nullify_out_of_range)
             self.chk_convert_units.setChecked(plan.convert_units)
             self.chk_drop_non_met.setChecked(plan.drop_non_metallurgical)
+            self.chk_drop_zero_flow.setChecked(
+                bool(getattr(plan, "drop_zero_or_negative_flow", True))
+            )
             set_combo_by_data(self.missing_strategy_combo, plan.missing_strategy)
         finally:
             self._syncing = False
@@ -629,6 +686,7 @@ class ETLWizardView(QWidget):
         cleaned = self._state.cleaned_dataset
         if cleaned is None:
             self.audit_table.setRowCount(0)
+            autosize_table_headers(self.audit_table, stretch_last=True)
             return
         logs = cleaned.audit_log
         self.audit_table.setRowCount(len(logs))
@@ -640,6 +698,7 @@ class ETLWizardView(QWidget):
                 r, 3, make_numeric_item(float(entry.affected_rows), fmt="{:.0f}")
             )
             self.audit_table.setItem(r, 4, make_text_item(entry.detail))
+        autosize_table_headers(self.audit_table, stretch_last=True)
 
     def apply_and_validate(self) -> bool:
         """Confirm CleaningPlan explicitly and run core.etl.apply_cleaning_plan."""
@@ -659,6 +718,8 @@ class ETLWizardView(QWidget):
         plan.nullify_out_of_range = self.chk_out_of_range.isChecked()
         plan.convert_units = self.chk_convert_units.isChecked()
         plan.drop_non_metallurgical = self.chk_drop_non_met.isChecked()
+        if hasattr(plan, "drop_zero_or_negative_flow"):
+            plan.drop_zero_or_negative_flow = self.chk_drop_zero_flow.isChecked()
         plan.missing_strategy = self.missing_strategy_combo.currentData() or "keep_as_unmeasured"
         plan.confirmed = True
 

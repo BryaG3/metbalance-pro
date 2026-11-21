@@ -11,21 +11,31 @@ from typing import Any, Optional
 
 import pandas as pd
 from PySide6.QtCore import QByteArray, QPoint, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QHBoxLayout,
     QHeaderView,
+    QLabel,
     QLayout,
     QLayoutItem,
+    QLineEdit,
+    QPushButton,
     QSizePolicy,
+    QSpinBox,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
+    QVBoxLayout,
     QWidget,
 )
 
+from app.i18n.manager import get_i18n
 from core.etl import build_amira_p754_presets
 from core.models import (
     BatchReconciliationResult,
@@ -438,6 +448,236 @@ def configure_dense_table(
     header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
     if not editable:
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+
+
+def autosize_table_headers(table: QTableWidget, *, stretch_last: bool = True) -> None:
+    """Size columns to contents while guaranteeing every header label fits without clipping."""
+    header = table.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    header.setStretchLastSection(stretch_last)
+    table.resizeColumnsToContents()
+    fm = QFontMetrics(header.font())
+    for col in range(table.columnCount()):
+        h_item = table.horizontalHeaderItem(col)
+        h_text = h_item.text() if h_item is not None else ""
+        min_header_w = fm.horizontalAdvance(h_text) + 28
+        if table.columnWidth(col) < min_header_w:
+            table.setColumnWidth(col, min_header_w)
+
+
+def make_expand_table_button(parent: QWidget, theme: str = "light") -> QPushButton:
+    """Create a compact button with SVG icon to open TableInspectorDialog for a table."""
+    i18n = get_i18n()
+    btn = QPushButton(i18n.t("common.expand_table"), parent)
+    btn.setProperty("compact", True)
+    btn.setIcon(load_svg_icon("reset_layout.svg", theme, size=14))
+    return btn
+
+
+class TableInspectorDialog(QDialog):
+    """Expanded read-only table inspector with instant text filtering and TSV clipboard copy."""
+
+    def __init__(
+        self,
+        source_table: QTableWidget,
+        title: str,
+        theme: str = "light",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._theme = theme
+        self._i18n = get_i18n()
+        self.setPalette(build_palette(theme))
+        self.setAutoFillBackground(True)
+        self.setWindowTitle(self._i18n.t("common.table_inspector_title", title=title))
+        self.resize(1050, 650)
+        self.setMinimumSize(720, 420)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(8)
+        self.filter_edit = QLineEdit(self)
+        self.filter_edit.setPlaceholderText(self._i18n.t("common.search_placeholder"))
+        self.filter_edit.setClearButtonEnabled(True)
+
+        self.row_count_label = QLabel("", self)
+        self.row_count_label.setFont(monospace_font(8.5, bold=True))
+
+        self.copy_tsv_btn = QPushButton(self._i18n.t("common.copy_tsv"), self)
+        self.copy_tsv_btn.setProperty("compact", True)
+        self.copy_tsv_btn.setIcon(load_svg_icon("export_doc.svg", theme, size=15))
+
+        top_bar.addWidget(self.filter_edit, 1)
+        top_bar.addWidget(self.row_count_label)
+        top_bar.addWidget(self.copy_tsv_btn)
+        root.addLayout(top_bar)
+
+        self.table = QTableWidget(self)
+        self.table.setObjectName("TableInspectorCopy")
+        configure_dense_table(self.table, stretch_last=True, editable=False)
+        root.addWidget(self.table, 1)
+
+        bottom_bar = QHBoxLayout()
+        bottom_bar.setSpacing(8)
+        self.status_label = QLabel("", self)
+        self.status_label.setFont(ui_font(8.5))
+        self.close_btn = QPushButton(self._i18n.t("common.close"), self)
+        self.close_btn.setProperty("compact", True)
+        bottom_bar.addWidget(self.status_label, 1)
+        bottom_bar.addWidget(self.close_btn)
+        root.addLayout(bottom_bar)
+
+        self._clone_from(source_table)
+        self._apply_filter("")
+
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        self.copy_tsv_btn.clicked.connect(self.copy_to_clipboard_tsv)
+        self.close_btn.clicked.connect(self.accept)
+
+    def _extract_widget_value(self, widget: QWidget) -> tuple[str, Qt.AlignmentFlag, bool]:
+        """Extract display text, alignment, and monospace flag from an embedded cell widget."""
+        yes_str = self._i18n.t("step04.yes")
+        no_str = self._i18n.t("step04.no")
+        if isinstance(widget, QComboBox):
+            return (
+                widget.currentText(),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                False,
+            )
+        if isinstance(widget, (QDoubleSpinBox, QSpinBox)):
+            txt = widget.text().strip() or str(widget.value())
+            return (
+                txt,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                True,
+            )
+        if isinstance(widget, QCheckBox):
+            return (
+                yes_str if widget.isChecked() else no_str,
+                Qt.AlignmentFlag.AlignCenter,
+                False,
+            )
+        if isinstance(widget, (QLineEdit, QLabel)):
+            return (
+                widget.text(),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                False,
+            )
+        for child_type in (QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QLineEdit, QLabel):
+            child = widget.findChild(child_type)
+            if child is not None:
+                return self._extract_widget_value(child)
+        return ("", Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, False)
+
+    def _clone_from(self, source_table: QTableWidget) -> None:
+        rows = source_table.rowCount()
+        cols = source_table.columnCount()
+        self.table.setRowCount(rows)
+        self.table.setColumnCount(cols)
+
+        h_labels: list[str] = []
+        for c in range(cols):
+            h_item = source_table.horizontalHeaderItem(c)
+            h_labels.append(h_item.text() if h_item is not None else str(c + 1))
+        self.table.setHorizontalHeaderLabels(h_labels)
+
+        if source_table.verticalHeader().isVisible():
+            self.table.verticalHeader().setVisible(True)
+            v_labels: list[str] = []
+            for r in range(rows):
+                v_item = source_table.verticalHeaderItem(r)
+                v_labels.append(v_item.text() if v_item is not None else str(r + 1))
+            self.table.setVerticalHeaderLabels(v_labels)
+
+        ro_flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        for r in range(rows):
+            for c in range(cols):
+                cell_widget = source_table.cellWidget(r, c)
+                src_item = source_table.item(r, c)
+                if cell_widget is not None:
+                    text, align, is_mono = self._extract_widget_value(cell_widget)
+                    item = QTableWidgetItem(text)
+                    item.setTextAlignment(align)
+                    if is_mono:
+                        item.setFont(monospace_font(9.0))
+                elif src_item is not None:
+                    item = QTableWidgetItem(src_item.text())
+                    item.setTextAlignment(Qt.AlignmentFlag(src_item.textAlignment()))
+                    item.setFont(src_item.font())
+                    fg = src_item.data(Qt.ItemDataRole.ForegroundRole)
+                    if fg is not None:
+                        item.setData(Qt.ItemDataRole.ForegroundRole, fg)
+                    bg = src_item.data(Qt.ItemDataRole.BackgroundRole)
+                    if bg is not None:
+                        item.setData(Qt.ItemDataRole.BackgroundRole, bg)
+                else:
+                    item = QTableWidgetItem("")
+                item.setFlags(ro_flags)
+                self.table.setItem(r, c, item)
+
+        autosize_table_headers(self.table, stretch_last=True)
+
+    def _apply_filter(self, text: str) -> None:
+        needle = text.strip().lower()
+        total = self.table.rowCount()
+        cols = self.table.columnCount()
+        visible = 0
+        for r in range(total):
+            if not needle:
+                matched = True
+            else:
+                matched = False
+                for c in range(cols):
+                    item = self.table.item(r, c)
+                    if item is not None and needle in item.text().lower():
+                        matched = True
+                        break
+            self.table.setRowHidden(r, not matched)
+            if matched:
+                visible += 1
+        self.row_count_label.setText(
+            self._i18n.t("common.rows_visible_fmt", visible=visible, total=total)
+        )
+
+    def copy_to_clipboard_tsv(self) -> str:
+        """Copy headers and currently visible rows as TSV to clipboard and return the TSV string."""
+        cols = self.table.columnCount()
+        headers = [
+            (
+                self.table.horizontalHeaderItem(c).text()
+                if self.table.horizontalHeaderItem(c) is not None
+                else ""
+            )
+            .replace("\t", " ")
+            .replace("\r", " ")
+            .replace("\n", " ")
+            for c in range(cols)
+        ]
+        lines = ["\t".join(headers)]
+        visible_rows = 0
+        for r in range(self.table.rowCount()):
+            if self.table.isRowHidden(r):
+                continue
+            vals = [
+                (self.table.item(r, c).text() if self.table.item(r, c) is not None else "")
+                .replace("\t", " ")
+                .replace("\r", " ")
+                .replace("\n", " ")
+                for c in range(cols)
+            ]
+            lines.append("\t".join(vals))
+            visible_rows += 1
+        tsv = "\n".join(lines)
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(tsv)
+        self.status_label.setText(
+            self._i18n.t("common.copied_tsv_msg", rows=visible_rows)
+        )
+        return tsv
 
 
 def make_text_item(

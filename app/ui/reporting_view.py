@@ -12,11 +12,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -80,48 +83,114 @@ class ReportingView(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
+        # Fixed header
         self.header_title = QLabel(self)
         self.header_title.setFont(ui_font(11.0, bold=True))
+        self.header_title.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         root.addWidget(self.header_title)
 
+        # Scrollable central body (prevents vertical crushing at 1366x768)
+        self.body_scroll = QScrollArea(self)
+        self.body_scroll.setObjectName("ReportingBodyScroll")
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.body_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self._body_container = QWidget(self.body_scroll)
+        self._body_container.setObjectName("ReportingBodyContainer")
+        body_layout = QVBoxLayout(self._body_container)
+        body_layout.setContentsMargins(0, 0, 4, 0)
+        body_layout.setSpacing(8)
+
         # Branding Configuration Form
-        self.branding_group = QGroupBox(self)
+        self.branding_group = QGroupBox(self._body_container)
+        self.branding_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         form = QFormLayout(self.branding_group)
         form.setSpacing(6)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.company_edit = QLineEdit(self.branding_group)
         self.unit_edit = QLineEdit(self.branding_group)
         self.lead_edit = QLineEdit(self.branding_group)
         self.doc_code_edit = QLineEdit(self.branding_group)
         self.doc_code_edit.setFont(monospace_font(9.5))
+        for edit in (self.company_edit, self.unit_edit, self.lead_edit, self.doc_code_edit):
+            edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        color_row = QHBoxLayout()
-        self.color_preview = QLabel(self.branding_group)
+        color_row_widget = QWidget(self.branding_group)
+        color_row_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        color_row = QHBoxLayout(color_row_widget)
+        color_row.setContentsMargins(0, 0, 0, 0)
+        color_row.setSpacing(6)
+        self.color_preview = QLabel(color_row_widget)
         self.color_preview.setFixedSize(26, 22)
-        self.color_edit = QLineEdit(self.branding_group)
+        self.color_edit = QLineEdit(color_row_widget)
         self.color_edit.setReadOnly(True)
+        self.color_edit.setMinimumWidth(90)
         self.color_edit.setFont(monospace_font(9.5))
-        self.pick_color_btn = QPushButton(self.branding_group)
+        self.color_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.pick_color_btn = QPushButton(color_row_widget)
+        self.pick_color_btn.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         color_row.addWidget(self.color_preview)
-        color_row.addWidget(self.color_edit)
+        color_row.addWidget(self.color_edit, 1)
         color_row.addWidget(self.pick_color_btn)
 
-        logo_row = QHBoxLayout()
-        self.logo_edit = QLineEdit(self.branding_group)
+        logo_row_widget = QWidget(self.branding_group)
+        logo_row_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+        logo_v = QVBoxLayout(logo_row_widget)
+        logo_v.setContentsMargins(0, 0, 0, 0)
+        logo_v.setSpacing(4)
+        self.logo_edit = QLineEdit(logo_row_widget)
         self.logo_edit.setReadOnly(True)
-        self.browse_logo_btn = QPushButton(self.branding_group)
-        self.clear_logo_btn = QPushButton(self.branding_group)
-        logo_row.addWidget(self.logo_edit, 1)
-        logo_row.addWidget(self.browse_logo_btn)
-        logo_row.addWidget(self.clear_logo_btn)
+        self.logo_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        logo_btns = FlowLayout(margin=0, h_spacing=6, v_spacing=6)
+        self.browse_logo_btn = QPushButton(logo_row_widget)
+        self.browse_logo_btn.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
+        self.clear_logo_btn = QPushButton(logo_row_widget)
+        self.clear_logo_btn.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
+        logo_btns.addWidget(self.browse_logo_btn)
+        logo_btns.addWidget(self.clear_logo_btn)
+        logo_v.addWidget(self.logo_edit)
+        logo_v.addLayout(logo_btns)
 
         self.logo_thumb = QLabel(self.branding_group)
         self.logo_thumb.setFixedSize(160, 56)
         self.logo_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.logo_thumb.setFrameShape(QLabel.Shape.Box)
 
-        self.save_branding_btn = QPushButton(self.branding_group)
+        save_bar_widget = QWidget(self.branding_group)
+        save_bar_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        save_bar = QHBoxLayout(save_bar_widget)
+        save_bar.setContentsMargins(0, 0, 0, 0)
+        save_bar.setSpacing(6)
+        self.save_branding_btn = QPushButton(save_bar_widget)
         self.save_branding_btn.setProperty("accent", True)
+        self.save_branding_btn.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
+        save_bar.addWidget(self.save_branding_btn)
+        save_bar.addStretch(1)
 
         self.lbl_company = QLabel(self.branding_group)
         self.lbl_unit = QLabel(self.branding_group)
@@ -129,56 +198,91 @@ class ReportingView(QWidget):
         self.lbl_code = QLabel(self.branding_group)
         self.lbl_color = QLabel(self.branding_group)
         self.lbl_logo = QLabel(self.branding_group)
+        for lbl in (
+            self.lbl_company,
+            self.lbl_unit,
+            self.lbl_lead,
+            self.lbl_code,
+            self.lbl_color,
+            self.lbl_logo,
+        ):
+            lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
 
         form.addRow(self.lbl_company, self.company_edit)
         form.addRow(self.lbl_unit, self.unit_edit)
         form.addRow(self.lbl_lead, self.lead_edit)
         form.addRow(self.lbl_code, self.doc_code_edit)
-        form.addRow(self.lbl_color, color_row)
-        form.addRow(self.lbl_logo, logo_row)
+        form.addRow(self.lbl_color, color_row_widget)
+        form.addRow(self.lbl_logo, logo_row_widget)
         form.addRow("", self.logo_thumb)
-        form.addRow("", self.save_branding_btn)
-        root.addWidget(self.branding_group)
+        form.addRow("", save_bar_widget)
+        body_layout.addWidget(self.branding_group)
 
         # Export Group
-        self.export_group = QGroupBox(self)
+        self.export_group = QGroupBox(self._body_container)
+        self.export_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         exp_v = QVBoxLayout(self.export_group)
-        exp_row = FlowLayout(margin=0, h_spacing=6, v_spacing=6)
+        exp_v.setSpacing(6)
+        exp_row = FlowLayout(margin=0, h_spacing=8, v_spacing=6)
         period_box = QWidget(self.export_group)
+        period_box.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         period_box_layout = QHBoxLayout(period_box)
         period_box_layout.setContentsMargins(0, 0, 0, 0)
         period_box_layout.setSpacing(6)
         self.export_period_lbl = QLabel(period_box)
+        self.export_period_lbl.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         self.export_period_combo = QComboBox(period_box)
         self.export_period_combo.setMinimumWidth(170)
+        self.export_period_combo.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         period_box_layout.addWidget(self.export_period_lbl)
         period_box_layout.addWidget(self.export_period_combo)
 
         self.export_excel_btn = QPushButton(self.export_group)
         self.export_excel_btn.setProperty("accent", True)
         self.export_excel_btn.setProperty("compact", True)
+        self.export_excel_btn.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         self.export_pdf_btn = QPushButton(self.export_group)
         self.export_pdf_btn.setProperty("accent", True)
         self.export_pdf_btn.setProperty("compact", True)
+        self.export_pdf_btn.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
 
         exp_row.addWidget(period_box)
         exp_row.addWidget(self.export_excel_btn)
         exp_row.addWidget(self.export_pdf_btn)
         exp_v.addLayout(exp_row)
-        root.addWidget(self.export_group)
+        body_layout.addWidget(self.export_group)
+        body_layout.addStretch(1)
 
-        # Status banner
+        self.body_scroll.setWidget(self._body_container)
+        root.addWidget(self.body_scroll, 1)
+
+        # Fixed status banner + navigation footer
         self.status_banner = QLabel(self)
         self.status_banner.setWordWrap(True)
         self.status_banner.setContentsMargins(8, 6, 8, 6)
+        self.status_banner.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         apply_status_role(self.status_banner, "pending")
         root.addWidget(self.status_banner)
-        root.addStretch(1)
 
-        # Footer
         footer = QHBoxLayout()
+        footer.setSpacing(6)
         footer.addStretch(1)
         self.prev_btn = QPushButton(self)
+        self.prev_btn.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         footer.addWidget(self.prev_btn)
         root.addLayout(footer)
 

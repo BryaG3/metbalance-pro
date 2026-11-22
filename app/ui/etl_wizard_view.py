@@ -10,10 +10,14 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QTabWidget,
     QTableWidget,
     QVBoxLayout,
@@ -77,64 +81,131 @@ class ETLWizardView(QWidget):
         self.retranslate_ui()
         self.refresh_from_state()
 
+    @staticmethod
+    def _lock_vertical_fixed(
+        widget: QWidget, h_policy: Optional[QSizePolicy.Policy] = None
+    ) -> None:
+        sp = widget.sizePolicy()
+        if h_policy is not None:
+            sp.setHorizontalPolicy(h_policy)
+        sp.setVerticalPolicy(QSizePolicy.Policy.Fixed)
+        widget.setSizePolicy(sp)
+
+    @staticmethod
+    def _create_scroll_page(parent: QWidget) -> tuple[QScrollArea, QWidget, QVBoxLayout]:
+        scroll = QScrollArea(parent)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.viewport().setAutoFillBackground(False)
+
+        body = QWidget()
+        body.setAutoFillBackground(False)
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(8, 8, 8, 8)
+        body_layout.setSpacing(8)
+        scroll.setWidget(body)
+        return scroll, body, body_layout
+
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
+        # Fixed Header
         self.header_title = QLabel(self)
         self.header_title.setFont(ui_font(11.0, bold=True))
+        self._lock_vertical_fixed(self.header_title, QSizePolicy.Policy.Ignored)
         root.addWidget(self.header_title)
 
         # Source controls group
         self.source_group = QGroupBox(self)
+        self.source_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         src_layout = QVBoxLayout(self.source_group)
-        src_layout.setSpacing(5)
+        src_layout.setContentsMargins(8, 8, 8, 8)
+        src_layout.setSpacing(6)
 
-        btn_row = FlowLayout(margin=0, h_spacing=6, v_spacing=6)
-        self.load_file_btn = QPushButton(self.source_group)
+        btn_container = QWidget(self.source_group)
+        btn_container.setAutoFillBackground(False)
+        btn_row = FlowLayout(btn_container, margin=0, h_spacing=6, v_spacing=6)
+        self.load_file_btn = QPushButton(btn_container)
         self.load_file_btn.setProperty("accent", True)
         self.load_file_btn.setProperty("compact", True)
-        self.sample_a_btn = QPushButton(self.source_group)
+        self._lock_vertical_fixed(self.load_file_btn, QSizePolicy.Policy.Minimum)
+        self.sample_a_btn = QPushButton(btn_container)
         self.sample_a_btn.setProperty("compact", True)
-        self.sample_b_btn = QPushButton(self.source_group)
+        self._lock_vertical_fixed(self.sample_a_btn, QSizePolicy.Policy.Minimum)
+        self.sample_b_btn = QPushButton(btn_container)
         self.sample_b_btn.setProperty("compact", True)
+        self._lock_vertical_fixed(self.sample_b_btn, QSizePolicy.Policy.Minimum)
         btn_row.addWidget(self.load_file_btn)
         btn_row.addWidget(self.sample_a_btn)
         btn_row.addWidget(self.sample_b_btn)
-        src_layout.addLayout(btn_row)
+        src_layout.addWidget(btn_container)
 
-        meta_row = QHBoxLayout()
-        self.sheet_lbl = QLabel(self.source_group)
-        self.sheet_combo = QComboBox(self.source_group)
-        self.sheet_combo.setMinimumWidth(160)
+        meta_container = QWidget(self.source_group)
+        meta_container.setAutoFillBackground(False)
+        meta_row = FlowLayout(meta_container, margin=0, h_spacing=12, v_spacing=6)
+
+        def _make_meta_pair() -> tuple[QWidget, QHBoxLayout]:
+            pair = QWidget(meta_container)
+            pair.setAutoFillBackground(False)
+            self._lock_vertical_fixed(pair, QSizePolicy.Policy.Maximum)
+            pair_lay = QHBoxLayout(pair)
+            pair_lay.setContentsMargins(0, 0, 0, 0)
+            pair_lay.setSpacing(5)
+            return pair, pair_lay
+
+        sheet_box, sheet_box_lay = _make_meta_pair()
+        self.sheet_lbl = QLabel(sheet_box)
+        self._lock_vertical_fixed(self.sheet_lbl)
+        self.sheet_combo = QComboBox(sheet_box)
+        self.sheet_combo.setMinimumWidth(150)
         self.sheet_combo.setEnabled(False)
+        self._lock_vertical_fixed(self.sheet_combo, QSizePolicy.Policy.Preferred)
+        sheet_box_lay.addWidget(self.sheet_lbl)
+        sheet_box_lay.addWidget(self.sheet_combo)
 
-        self.delimiter_lbl = QLabel(self.source_group)
-        self.delimiter_val = QLabel("-", self.source_group)
+        delim_box, delim_box_lay = _make_meta_pair()
+        self.delimiter_lbl = QLabel(delim_box)
+        self._lock_vertical_fixed(self.delimiter_lbl)
+        self.delimiter_val = QLabel("-", delim_box)
         self.delimiter_val.setFont(monospace_font(9.0, bold=True))
+        self._lock_vertical_fixed(self.delimiter_val)
+        delim_box_lay.addWidget(self.delimiter_lbl)
+        delim_box_lay.addWidget(self.delimiter_val)
 
-        self.encoding_lbl = QLabel(self.source_group)
-        self.encoding_val = QLabel("-", self.source_group)
+        enc_box, enc_box_lay = _make_meta_pair()
+        self.encoding_lbl = QLabel(enc_box)
+        self._lock_vertical_fixed(self.encoding_lbl)
+        self.encoding_val = QLabel("-", enc_box)
         self.encoding_val.setFont(monospace_font(9.0, bold=True))
+        self._lock_vertical_fixed(self.encoding_val)
+        enc_box_lay.addWidget(self.encoding_lbl)
+        enc_box_lay.addWidget(self.encoding_val)
 
-        self.row_count_val = QLabel(self.source_group)
-        self.hash_val = QLabel(self.source_group)
+        self.row_count_val = QLabel(meta_container)
+        self._lock_vertical_fixed(self.row_count_val)
+        self.hash_val = QLabel(meta_container)
         self.hash_val.setFont(monospace_font(8.5))
+        self._lock_vertical_fixed(self.hash_val)
 
-        meta_row.addWidget(self.sheet_lbl)
-        meta_row.addWidget(self.sheet_combo)
-        meta_row.addWidget(self.delimiter_lbl)
-        meta_row.addWidget(self.delimiter_val)
-        meta_row.addWidget(self.encoding_lbl)
-        meta_row.addWidget(self.encoding_val)
+        meta_row.addWidget(sheet_box)
+        meta_row.addWidget(delim_box)
+        meta_row.addWidget(enc_box)
         meta_row.addWidget(self.row_count_val)
-        meta_row.addWidget(self.hash_val, 1)
-        src_layout.addLayout(meta_row)
+        meta_row.addWidget(self.hash_val)
+        src_layout.addWidget(meta_container)
 
         self.non_met_banner = QLabel(self.source_group)
         self.non_met_banner.setWordWrap(True)
         self.non_met_banner.setContentsMargins(6, 4, 6, 4)
+        self.non_met_banner.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+        )
         apply_status_role(self.non_met_banner, "pending")
         src_layout.addWidget(self.non_met_banner)
 
@@ -142,15 +213,22 @@ class ETLWizardView(QWidget):
 
         # Workspace tabs: Anomalies, Column Mapping, Cleaning Plan + Audit Log
         self.tabs = QTabWidget(self)
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
 
-        # Tab 1: Anomalies
-        anom_tab = QWidget(self.tabs)
-        anom_layout = QVBoxLayout(anom_tab)
+        # Tab 1: Anomalies (Scrollable body)
+        self.anomalies_scroll, anom_tab, anom_layout = self._create_scroll_page(self.tabs)
         anom_top = QHBoxLayout()
+        anom_top.setSpacing(8)
         self.anomalies_banner = QLabel(anom_tab)
+        self.anomalies_banner.setWordWrap(True)
         self.anomalies_banner.setContentsMargins(6, 4, 6, 4)
+        self.anomalies_banner.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+        )
         apply_status_role(self.anomalies_banner, "pending")
         self.expand_anomalies_btn = make_expand_table_button(anom_tab, self._theme)
+        self._lock_vertical_fixed(self.expand_anomalies_btn, QSizePolicy.Policy.Fixed)
         anom_top.addWidget(self.anomalies_banner, 1)
         anom_top.addWidget(self.expand_anomalies_btn)
         anom_layout.addLayout(anom_top)
@@ -158,15 +236,20 @@ class ETLWizardView(QWidget):
         self.anomalies_table = QTableWidget(0, 7, anom_tab)
         self.anomalies_table.setObjectName("ETLAnomaliesTable")
         configure_dense_table(self.anomalies_table, stretch_last=True, editable=False)
+        self.anomalies_table.setMinimumHeight(240)
+        self.anomalies_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         anom_layout.addWidget(self.anomalies_table, 1)
-        self.tabs.addTab(anom_tab, "")
+        self.tabs.addTab(self.anomalies_scroll, "")
 
-        # Tab 2: Assisted Column Mapping
-        map_tab = QWidget(self.tabs)
-        map_layout = QVBoxLayout(map_tab)
+        # Tab 2: Assisted Column Mapping (Scrollable body)
+        self.mapping_scroll, map_tab, map_layout = self._create_scroll_page(self.tabs)
         map_top = QHBoxLayout()
+        map_top.setSpacing(8)
         map_top.addStretch(1)
         self.expand_mapping_btn = make_expand_table_button(map_tab, self._theme)
+        self._lock_vertical_fixed(self.expand_mapping_btn, QSizePolicy.Policy.Fixed)
         map_top.addWidget(self.expand_mapping_btn)
         map_layout.addLayout(map_top)
 
@@ -175,79 +258,136 @@ class ETLWizardView(QWidget):
         configure_dense_table(
             self.mapping_table, stretch_last=True, editable=False, has_embedded_widgets=True
         )
+        self.mapping_table.setMinimumHeight(240)
+        self.mapping_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         map_layout.addWidget(self.mapping_table, 1)
-        self.tabs.addTab(map_tab, "")
+        self.tabs.addTab(self.mapping_scroll, "")
 
-        # Tab 3: Cleaning Plan & Audit Log
-        plan_tab = QWidget(self.tabs)
-        plan_tab_layout = QVBoxLayout(plan_tab)
+        # Tab 3: Cleaning Plan & Audit Log (Scrollable body)
+        self.plan_scroll, plan_tab, plan_tab_layout = self._create_scroll_page(self.tabs)
 
         self.plan_group = QGroupBox(plan_tab)
-        plan_grid = QVBoxLayout(self.plan_group)
+        self.plan_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+        plan_layout = QVBoxLayout(self.plan_group)
+        plan_layout.setContentsMargins(10, 10, 10, 10)
+        plan_layout.setSpacing(8)
 
-        checks_row1 = QHBoxLayout()
+        checks_grid = QGridLayout()
+        checks_grid.setContentsMargins(0, 0, 0, 0)
+        checks_grid.setHorizontalSpacing(16)
+        checks_grid.setVerticalSpacing(6)
+        checks_grid.setColumnStretch(0, 1)
+        checks_grid.setColumnStretch(1, 1)
+
         self.chk_decimal_commas = QCheckBox(self.plan_group)
         self.chk_corrupt_text = QCheckBox(self.plan_group)
         self.chk_negative = QCheckBox(self.plan_group)
-        checks_row1.addWidget(self.chk_decimal_commas)
-        checks_row1.addWidget(self.chk_corrupt_text)
-        checks_row1.addWidget(self.chk_negative)
-        plan_grid.addLayout(checks_row1)
-
-        checks_row2 = QHBoxLayout()
         self.chk_out_of_range = QCheckBox(self.plan_group)
         self.chk_convert_units = QCheckBox(self.plan_group)
         self.chk_drop_non_met = QCheckBox(self.plan_group)
-        checks_row2.addWidget(self.chk_out_of_range)
-        checks_row2.addWidget(self.chk_convert_units)
-        checks_row2.addWidget(self.chk_drop_non_met)
-        plan_grid.addLayout(checks_row2)
-
-        checks_row3 = QHBoxLayout()
         self.chk_drop_zero_flow = QCheckBox(self.plan_group)
         self.chk_drop_zero_flow.setChecked(True)
-        checks_row3.addWidget(self.chk_drop_zero_flow)
-        checks_row3.addStretch(1)
-        plan_grid.addLayout(checks_row3)
 
-        strat_row = QHBoxLayout()
-        self.missing_strategy_lbl = QLabel(self.plan_group)
-        self.missing_strategy_combo = QComboBox(self.plan_group)
-        self.apply_cleaning_btn = QPushButton(self.plan_group)
+        for chk in (
+            self.chk_decimal_commas,
+            self.chk_corrupt_text,
+            self.chk_negative,
+            self.chk_out_of_range,
+            self.chk_convert_units,
+            self.chk_drop_non_met,
+            self.chk_drop_zero_flow,
+        ):
+            self._lock_vertical_fixed(chk, QSizePolicy.Policy.Minimum)
+
+        checks_grid.addWidget(self.chk_decimal_commas, 0, 0)
+        checks_grid.addWidget(self.chk_corrupt_text, 0, 1)
+        checks_grid.addWidget(self.chk_negative, 1, 0)
+        checks_grid.addWidget(self.chk_out_of_range, 1, 1)
+        checks_grid.addWidget(self.chk_convert_units, 2, 0)
+        checks_grid.addWidget(self.chk_drop_non_met, 2, 1)
+        checks_grid.addWidget(self.chk_drop_zero_flow, 3, 0, 1, 2)
+        plan_layout.addLayout(checks_grid)
+
+        plan_layout.addSpacing(8)
+
+        strat_container = QWidget(self.plan_group)
+        strat_container.setAutoFillBackground(False)
+        strat_row = FlowLayout(strat_container, margin=0, h_spacing=10, v_spacing=6)
+
+        strat_field_box = QWidget(strat_container)
+        strat_field_box.setAutoFillBackground(False)
+        self._lock_vertical_fixed(strat_field_box, QSizePolicy.Policy.Maximum)
+        strat_field_layout = QHBoxLayout(strat_field_box)
+        strat_field_layout.setContentsMargins(0, 0, 0, 0)
+        strat_field_layout.setSpacing(8)
+
+        self.missing_strategy_lbl = QLabel(strat_field_box)
+        self._lock_vertical_fixed(self.missing_strategy_lbl)
+        self.missing_strategy_combo = QComboBox(strat_field_box)
+        self.missing_strategy_combo.setMinimumWidth(260)
+        self._lock_vertical_fixed(self.missing_strategy_combo, QSizePolicy.Policy.Preferred)
+        strat_field_layout.addWidget(self.missing_strategy_lbl)
+        strat_field_layout.addWidget(self.missing_strategy_combo)
+
+        self.apply_cleaning_btn = QPushButton(strat_container)
         self.apply_cleaning_btn.setProperty("accent", True)
-        strat_row.addWidget(self.missing_strategy_lbl)
-        strat_row.addWidget(self.missing_strategy_combo, 1)
+        self._lock_vertical_fixed(self.apply_cleaning_btn, QSizePolicy.Policy.Minimum)
+
+        strat_row.addWidget(strat_field_box)
         strat_row.addWidget(self.apply_cleaning_btn)
-        plan_grid.addLayout(strat_row)
+        plan_layout.addWidget(strat_container)
 
         self.confirm_warning_lbl = QLabel(self.plan_group)
         self.confirm_warning_lbl.setWordWrap(True)
-        self.confirm_warning_lbl.setContentsMargins(6, 4, 6, 4)
+        self.confirm_warning_lbl.setContentsMargins(6, 5, 6, 5)
+        self.confirm_warning_lbl.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+        )
         apply_status_role(self.confirm_warning_lbl, "warning")
-        plan_grid.addWidget(self.confirm_warning_lbl)
+        plan_layout.addWidget(self.confirm_warning_lbl)
 
         plan_tab_layout.addWidget(self.plan_group)
 
         self.audit_group = QGroupBox(plan_tab)
+        self.audit_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         audit_layout = QVBoxLayout(self.audit_group)
+        audit_layout.setContentsMargins(8, 8, 8, 8)
+        audit_layout.setSpacing(6)
         self.audit_table = QTableWidget(0, 5, self.audit_group)
         self.audit_table.setObjectName("ETLAuditLogTable")
         configure_dense_table(self.audit_table, stretch_last=True, editable=False)
+        self.audit_table.setMinimumHeight(210)
+        self.audit_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         audit_layout.addWidget(self.audit_table, 1)
         plan_tab_layout.addWidget(self.audit_group, 1)
 
-        self.tabs.addTab(plan_tab, "")
+        self.tabs.addTab(self.plan_scroll, "")
         root.addWidget(self.tabs, 1)
 
-        # Footer banner + nav
+        # Fixed Footer banner + nav
         footer = QHBoxLayout()
+        footer.setSpacing(8)
         self.status_banner = QLabel(self)
+        self.status_banner.setWordWrap(True)
         self.status_banner.setContentsMargins(8, 5, 8, 5)
+        self.status_banner.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+        )
         apply_status_role(self.status_banner, "pending")
         footer.addWidget(self.status_banner, 1)
 
         self.prev_btn = QPushButton(self)
+        self._lock_vertical_fixed(self.prev_btn, QSizePolicy.Policy.Fixed)
         self.next_btn = QPushButton(self)
+        self._lock_vertical_fixed(self.next_btn, QSizePolicy.Policy.Fixed)
         footer.addWidget(self.prev_btn)
         footer.addWidget(self.next_btn)
         root.addLayout(footer)

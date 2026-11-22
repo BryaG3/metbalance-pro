@@ -1147,4 +1147,106 @@ def test_table_inspector_dialog_filter_copy_and_expand_buttons(qtbot, tmp_path: 
     assert win.close() is True
 
 
+def test_step_views_no_vertical_crushing_at_laptop_resolution(qtbot, tmp_path: Path) -> None:
+    """Verify zero vertical crushing, zero control overlaps, and readable tables at 1366x768."""
+    settings = _isolated_settings(tmp_path, "laptop_1366x768.ini")
+    settings.set_theme("light")
+    settings.set_language("es")
+    win = MainWindow(settings_manager=settings)
+    qtbot.addWidget(win)
+    win.set_language("es")
+    win.set_theme("light", persist=False)
+    win.resize(1366, 768)
+    win.show()
+    QApplication.processEvents()
+
+    # Run full Dataset A workflow: load -> clean -> AMIRA P754 -> Observability -> Batch WLS
+    win.load_sample_a()
+    QApplication.processEvents()
+    win.step_02_view.apply_and_validate()
+    QApplication.processEvents()
+    assert win.state.cleaned_dataset is not None
+
+    assert win.go_to_step(2, show_canvas=False) is True
+    win.step_03_view.apply_amira_presets()
+    assert win.step_03_view.validate_uncertainties() is True
+    QApplication.processEvents()
+
+    assert win.go_to_step(3, show_canvas=False) is True
+    obs = win.step_04_view.run_diagnostics()
+    assert obs is not None and obs.can_reconcile is True
+    QApplication.processEvents()
+
+    assert win.go_to_step(4, show_canvas=False) is True
+    with qtbot.waitSignal(win.step_05_view.reconciliation_completed, timeout=30000) as sig:
+        win.step_05_view.run_batch()
+    assert sig.args == [True]
+    assert win.state.batch_result is not None
+    QApplication.processEvents()
+
+    def _assert_controls_unclipped(view: QWidget, label: str) -> None:
+        QApplication.processEvents()
+        checked_count = 0
+        for ctrl in view.findChildren(QWidget):
+            if not isinstance(ctrl, (QCheckBox, QPushButton)) or not ctrl.isVisible():
+                continue
+            min_h = ctrl.minimumSizeHint().height()
+            assert ctrl.height() >= min_h, (
+                f"[{label}] {type(ctrl).__name__} {ctrl.text()!r} vertically crushed: "
+                f"height={ctrl.height()} < minimumSizeHint={min_h}"
+            )
+            checked_count += 1
+        assert checked_count > 0, f"[{label}] Expected visible QCheckBox/QPushButton controls"
+
+    # (a) Step 02 -> Plan de Limpieza Explícito sub-tab
+    assert win.go_to_step(1, show_canvas=False) is True
+    win.step_02_view.tabs.setCurrentIndex(2)
+    QApplication.processEvents()
+    _assert_controls_unclipped(win.step_02_view, "step02_plan_limpieza")
+
+    # Verify zero overlapping visible controls inside plan_group in shared group-box coordinates
+    plan_group = win.step_02_view.plan_group
+    plan_controls: list[tuple[QWidget, QRect]] = []
+    for wid in plan_group.findChildren(QWidget):
+        if not isinstance(wid, (QCheckBox, QPushButton, QComboBox, QLabel)) or not wid.isVisible():
+            continue
+        if isinstance(wid.parentWidget(), QComboBox):
+            continue
+        rect = QRect(wid.mapTo(plan_group, QPoint(0, 0)), wid.size())
+        assert rect.width() > 0 and rect.height() > 0
+        plan_controls.append((wid, rect))
+
+    assert len(plan_controls) >= 9, "Expected checkboxes, strategy controls, and warning in plan_group"
+    for idx, (wid_a, rect_a) in enumerate(plan_controls):
+        for wid_b, rect_b in plan_controls[idx + 1 :]:
+            assert not rect_a.intersects(rect_b), (
+                f"[plan_group] Overlapping controls: {type(wid_a).__name__}({rect_a}) "
+                f"vs {type(wid_b).__name__}({rect_b})"
+            )
+
+    assert win.step_02_view.audit_table.isVisible() is True
+    assert win.step_02_view.audit_table.height() >= 180
+
+    # (b) Step 04 -> Observabilidad y Cierre
+    assert win.go_to_step(3, show_canvas=False) is True
+    QApplication.processEvents()
+    _assert_controls_unclipped(win.step_04_view, "step04_observabilidad")
+    assert win.step_04_view.vars_table.isVisible() is True
+    assert win.step_04_view.vars_table.height() >= 180
+    assert win.step_04_view.nodal_table.isVisible() is True
+    assert win.step_04_view.nodal_table.height() >= 180
+
+    # (c) Step 05 -> Motor WLS y GED (with Single + Batch results loaded)
+    assert win.go_to_step(4, show_canvas=False) is True
+    QApplication.processEvents()
+    _assert_controls_unclipped(win.step_05_view, "step05_solver_lote")
+    assert win.step_05_view.adjustments_table.isVisible() is True
+    assert win.step_05_view.adjustments_table.height() >= 180
+    assert win.step_05_view.batch_table.isVisible() is True
+    assert win.step_05_view.batch_table.height() >= 180
+
+    assert win.close() is True
+
+
+
 

@@ -9,11 +9,13 @@ import sys
 import zlib
 from pathlib import Path
 
+import numpy as np
 import openpyxl
 import pytest
 from openpyxl.utils.units import EMU_to_cm, EMU_to_pixels
 from PIL import Image
 
+from app.i18n.manager import I18nManager
 from core.etl import (
     apply_cleaning_plan,
     build_amira_p754_presets,
@@ -36,7 +38,13 @@ from reporting.branding import (
     save_branding_profile,
 )
 from reporting.excel_exporter import _build_proportional_logo, export_to_excel
-from reporting.pdf_exporter import export_to_pdf
+from reporting.pdf_exporter import (
+    _render_adjustments_png,
+    _render_chi2_control_png,
+    _render_parity_png,
+    _rl_image_from_png_buf,
+    export_to_pdf,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_DATA_DIR = PROJECT_ROOT / "app" / "assets" / "sample_data"
@@ -472,3 +480,44 @@ def test_pdf_long_circuit_name_fine_unit_header_and_skipped_batch(
     expected_fine_prefix = "Fino Rec." if lang == "es" else "Rec. Fine"
     assert expected_fine_prefix in extracted_text
     assert f"({long_circuit.mass_unit.value})" in extracted_text
+
+
+@pytest.mark.parametrize("lang", ["es", "en"])
+def test_pdf_chart_png_margins_and_proportional_sizing(lang: str) -> None:
+    """Verify all 3 PDF Section 6 chart PNGs have unclipped white top/bottom margins and aspect-preserving RL sizing."""
+    circuit, _dataset, _uncertainty, result, _kpi_report, batch_result, _outlier_cmp, branding = (
+        _build_sample_reporting_bundle()
+    )
+    i18n = I18nManager(default_language=lang)
+
+    chart_buffers = [
+        ("parity", _render_parity_png(result, i18n, branding.primary_color)),
+        ("adjustments", _render_adjustments_png(result, i18n)),
+        ("chi2_control", _render_chi2_control_png(batch_result, i18n, branding.primary_color)),
+    ]
+
+    for chart_name, buf in chart_buffers:
+        buf.seek(0)
+        with Image.open(buf) as pil_img:
+            rgb = pil_img.convert("RGB")
+            px_w, px_h = rgb.size
+            assert px_w > 0 and px_h > 0, f"{chart_name} rendered zero dimensions"
+            assert px_w >= 1000 and px_h >= 600, f"{chart_name} unexpectedly small at 300 DPI: {px_w}x{px_h}"
+
+            arr = np.asarray(rgb)
+            # Top 4px and bottom 4px edges must be pure white (no clipped title or X-axis label ink)
+            assert np.all(arr[:4, :, :] >= 250), f"{chart_name} has ink touching top 4px edge"
+            assert np.all(arr[-4:, :, :] >= 250), f"{chart_name} has ink touching bottom 4px edge"
+
+            # Verify real chart ink exists inside the interior (guard against blank render)
+            non_white = np.any(arr < 250, axis=2)
+            assert int(np.sum(non_white)) > 1000, f"{chart_name} rendered unexpectedly empty"
+
+        # Verify ReportLab image preserves exact aspect ratio under both width-limited and height-limited budgets
+        rl_fit = _rl_image_from_png_buf(buf, target_width=480.0, max_height=400.0)
+        assert rl_fit.drawWidth == pytest.approx(480.0, rel=1e-4)
+        assert rl_fit.drawHeight == pytest.approx(480.0 * (px_h / px_w), rel=1e-4)
+
+        rl_capped = _rl_image_from_png_buf(buf, target_width=480.0, max_height=180.0)
+        assert rl_capped.drawHeight == pytest.approx(180.0, rel=1e-4)
+        assert rl_capped.drawWidth == pytest.approx(180.0 * (px_w / px_h), rel=1e-4)

@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
-    QSplitter,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -146,64 +147,142 @@ class SolverResultsView(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
+        # Fixed Header
         self.header_title = QLabel(self)
         self.header_title.setFont(ui_font(11.0, bold=True))
+        self.header_title.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         root.addWidget(self.header_title)
 
-        # Execution controls
-        self.ctrl_group = QGroupBox(self)
-        ctrl_v = QVBoxLayout(self.ctrl_group)
-        ctrl_v.setSpacing(5)
+        # Scrollable Central Body
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.scroll_area.viewport().setAutoFillBackground(False)
 
-        btn_row = FlowLayout(margin=0, h_spacing=6, v_spacing=6)
-        period_box = QWidget(self.ctrl_group)
+        scroll_content = QWidget(self.scroll_area)
+        body_layout = QVBoxLayout(scroll_content)
+        body_layout.setContentsMargins(0, 0, 4, 0)
+        body_layout.setSpacing(8)
+
+        # 1. Execution Controls Group
+        self.ctrl_group = QGroupBox(scroll_content)
+        self.ctrl_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        ctrl_v = QVBoxLayout(self.ctrl_group)
+        ctrl_v.setSpacing(6)
+
+        ctrl_btn_bar = QWidget(self.ctrl_group)
+        ctrl_btn_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        btn_row = FlowLayout(ctrl_btn_bar, margin=0, h_spacing=6, v_spacing=6)
+
+        period_box = QWidget(ctrl_btn_bar)
+        period_box.setAutoFillBackground(False)
+        period_box.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         period_box_layout = QHBoxLayout(period_box)
         period_box_layout.setContentsMargins(0, 0, 0, 0)
         period_box_layout.setSpacing(6)
         self.period_lbl = QLabel(period_box)
         self.period_combo = QComboBox(period_box)
         self.period_combo.setMinimumWidth(160)
+        self.period_combo.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         period_box_layout.addWidget(self.period_lbl)
         period_box_layout.addWidget(self.period_combo)
 
-        self.run_single_btn = QPushButton(self.ctrl_group)
+        self.run_single_btn = QPushButton(ctrl_btn_bar)
         self.run_single_btn.setProperty("accent", True)
         self.run_single_btn.setProperty("compact", True)
-        self.run_batch_btn = QPushButton(self.ctrl_group)
+        self.run_single_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.run_batch_btn = QPushButton(ctrl_btn_bar)
         self.run_batch_btn.setProperty("compact", True)
-        self.progress_bar = QProgressBar(self.ctrl_group)
+        self.run_batch_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.progress_bar = QProgressBar(ctrl_btn_bar)
         self.progress_bar.setMinimumWidth(160)
-        self.progress_bar.setFixedHeight(22)
+        self.progress_bar.setMinimumHeight(22)
+        self.progress_bar.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         self.progress_bar.setVisible(False)
 
         btn_row.addWidget(period_box)
         btn_row.addWidget(self.run_single_btn)
         btn_row.addWidget(self.run_batch_btn)
         btn_row.addWidget(self.progress_bar)
-        ctrl_v.addLayout(btn_row)
+        ctrl_v.addWidget(ctrl_btn_bar)
 
-        solver_row = QHBoxLayout()
         self.solver_status_lbl = QLabel(self.ctrl_group)
-        self.solver_status_lbl.setContentsMargins(6, 3, 6, 3)
+        self.solver_status_lbl.setWordWrap(True)
+        self.solver_status_lbl.setContentsMargins(6, 4, 6, 4)
+        self.solver_status_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         apply_status_role(self.solver_status_lbl, "pending")
-        self.max_mass_res_lbl = QLabel(self.ctrl_group)
-        self.max_mass_res_val = QLabel("-", self.ctrl_group)
+        ctrl_v.addWidget(self.solver_status_lbl)
+
+        residuals_bar = QWidget(self.ctrl_group)
+        residuals_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        residuals_flow = FlowLayout(residuals_bar, margin=0, h_spacing=12, v_spacing=4)
+
+        mass_res_box = QWidget(residuals_bar)
+        mass_res_box.setAutoFillBackground(False)
+        mass_res_box.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
+        mass_res_layout = QHBoxLayout(mass_res_box)
+        mass_res_layout.setContentsMargins(0, 0, 0, 0)
+        mass_res_layout.setSpacing(6)
+        self.max_mass_res_lbl = QLabel(mass_res_box)
+        self.max_mass_res_val = QLabel("-", mass_res_box)
         self.max_mass_res_val.setFont(monospace_font(9.0, bold=True))
-        self.max_sp_res_lbl = QLabel(self.ctrl_group)
-        self.max_sp_res_val = QLabel("-", self.ctrl_group)
+        mass_res_layout.addWidget(self.max_mass_res_lbl)
+        mass_res_layout.addWidget(self.max_mass_res_val)
+
+        sp_res_box = QWidget(residuals_bar)
+        sp_res_box.setAutoFillBackground(False)
+        sp_res_box.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
+        sp_res_layout = QHBoxLayout(sp_res_box)
+        sp_res_layout.setContentsMargins(0, 0, 0, 0)
+        sp_res_layout.setSpacing(6)
+        self.max_sp_res_lbl = QLabel(sp_res_box)
+        self.max_sp_res_val = QLabel("-", sp_res_box)
         self.max_sp_res_val.setFont(monospace_font(9.0, bold=True))
+        sp_res_layout.addWidget(self.max_sp_res_lbl)
+        sp_res_layout.addWidget(self.max_sp_res_val)
 
-        solver_row.addWidget(self.solver_status_lbl, 1)
-        solver_row.addWidget(self.max_mass_res_lbl)
-        solver_row.addWidget(self.max_mass_res_val)
-        solver_row.addWidget(self.max_sp_res_lbl)
-        solver_row.addWidget(self.max_sp_res_val)
-        ctrl_v.addLayout(solver_row)
-        root.addWidget(self.ctrl_group)
+        residuals_flow.addWidget(mass_res_box)
+        residuals_flow.addWidget(sp_res_box)
+        ctrl_v.addWidget(residuals_bar)
+        body_layout.addWidget(self.ctrl_group)
 
-        # GED Diagnostics Group
-        self.ged_group = QGroupBox(self)
+        # 2. GED Diagnostics Group
+        self.ged_group = QGroupBox(scroll_content)
+        self.ged_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         ged_v = QVBoxLayout(self.ged_group)
+        ged_v.setSpacing(6)
         ged_grid = QGridLayout()
         ged_grid.setSpacing(6)
 
@@ -219,14 +298,19 @@ class SolverResultsView(QWidget):
         for idx, key in enumerate(ged_keys):
             card = QFrame(self.ged_group)
             card.setProperty("card", True)
+            card.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
             cl = QVBoxLayout(card)
             cl.setContentsMargins(8, 4, 8, 4)
             cl.setSpacing(2)
             t_lbl = QLabel(card)
             t_lbl.setProperty("role", "secondary")
             t_lbl.setFont(ui_font(8.0))
+            t_lbl.setWordWrap(True)
             v_lbl = QLabel("-", card)
             v_lbl.setFont(monospace_font(9.5, bold=True))
+            v_lbl.setWordWrap(True)
             cl.addWidget(t_lbl)
             cl.addWidget(v_lbl)
             ged_grid.addWidget(card, idx // 4, idx % 4)
@@ -236,81 +320,148 @@ class SolverResultsView(QWidget):
 
         self.ged_verdict_banner = QLabel(self.ged_group)
         self.ged_verdict_banner.setWordWrap(True)
-        self.ged_verdict_banner.setContentsMargins(8, 4, 8, 4)
+        self.ged_verdict_banner.setContentsMargins(8, 5, 8, 5)
+        self.ged_verdict_banner.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         apply_status_role(self.ged_verdict_banner, "pending")
         ged_v.addWidget(self.ged_verdict_banner)
-        root.addWidget(self.ged_group)
+        body_layout.addWidget(self.ged_group)
 
-        # Adjustments + Outlier Comparison + Batch Summary Splitter
-        splitter = QSplitter(Qt.Orientation.Vertical, self)
-
-        # Adjustments + Outlier toolbar
-        adj_container = QWidget(splitter)
-        adj_layout = QVBoxLayout(adj_container)
-        adj_layout.setContentsMargins(0, 0, 0, 0)
-        adj_layout.setSpacing(5)
-
-        self.outlier_group = QGroupBox(adj_container)
+        # 3. Con vs. Sin Outlier Analysis Group
+        self.outlier_group = QGroupBox(scroll_content)
+        self.outlier_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         out_v = QVBoxLayout(self.outlier_group)
-        out_btns = FlowLayout(margin=0, h_spacing=6, v_spacing=6)
-        self.mark_outlier_btn = QPushButton(self.outlier_group)
+        out_v.setSpacing(6)
+
+        out_btn_bar = QWidget(self.outlier_group)
+        out_btn_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        out_btns = FlowLayout(out_btn_bar, margin=0, h_spacing=6, v_spacing=6)
+        self.mark_outlier_btn = QPushButton(out_btn_bar)
         self.mark_outlier_btn.setProperty("compact", True)
-        self.clear_outliers_btn = QPushButton(self.outlier_group)
+        self.mark_outlier_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.clear_outliers_btn = QPushButton(out_btn_bar)
         self.clear_outliers_btn.setProperty("compact", True)
-        self.compare_outliers_btn = QPushButton(self.outlier_group)
+        self.clear_outliers_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.compare_outliers_btn = QPushButton(out_btn_bar)
         self.compare_outliers_btn.setProperty("accent", True)
         self.compare_outliers_btn.setProperty("compact", True)
-        self.excluded_list_lbl = QLabel("-", self.outlier_group)
-        self.excluded_list_lbl.setFont(monospace_font(8.5))
+        self.compare_outliers_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
 
         out_btns.addWidget(self.mark_outlier_btn)
         out_btns.addWidget(self.clear_outliers_btn)
         out_btns.addWidget(self.compare_outliers_btn)
-        out_btns.addWidget(self.excluded_list_lbl)
-        out_v.addLayout(out_btns)
+        out_v.addWidget(out_btn_bar)
+
+        self.excluded_list_lbl = QLabel("-", self.outlier_group)
+        self.excluded_list_lbl.setFont(monospace_font(8.5))
+        self.excluded_list_lbl.setWordWrap(True)
+        self.excluded_list_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+        out_v.addWidget(self.excluded_list_lbl)
 
         self.comparison_panel = QFrame(self.outlier_group)
         self.comparison_panel.setProperty("card", True)
+        self.comparison_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         comp_layout = QHBoxLayout(self.comparison_panel)
         comp_layout.setContentsMargins(8, 5, 8, 5)
+        comp_layout.setSpacing(8)
         self.comp_with_lbl = QLabel(self.comparison_panel)
         self.comp_with_lbl.setFont(monospace_font(8.5))
+        self.comp_with_lbl.setWordWrap(True)
         self.comp_without_lbl = QLabel(self.comparison_panel)
         self.comp_without_lbl.setFont(monospace_font(8.5))
+        self.comp_without_lbl.setWordWrap(True)
         self.comp_delta_lbl = QLabel(self.comparison_panel)
         self.comp_delta_lbl.setFont(monospace_font(8.5, bold=True))
+        self.comp_delta_lbl.setWordWrap(True)
         comp_layout.addWidget(self.comp_with_lbl, 1)
         comp_layout.addWidget(self.comp_without_lbl, 1)
         comp_layout.addWidget(self.comp_delta_lbl, 1)
         self.comparison_panel.setVisible(False)
         out_v.addWidget(self.comparison_panel)
-        adj_layout.addWidget(self.outlier_group)
+        body_layout.addWidget(self.outlier_group)
 
-        self.adj_group = QGroupBox(adj_container)
+        # 4. Variable Adjustments Table Group
+        self.adj_group = QGroupBox(scroll_content)
+        self.adj_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         adj_tbl_layout = QVBoxLayout(self.adj_group)
-        adj_top = QHBoxLayout()
+        adj_tbl_layout.setSpacing(6)
+
+        adj_top_bar = QWidget(self.adj_group)
+        adj_top_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        adj_top = QHBoxLayout(adj_top_bar)
+        adj_top.setContentsMargins(0, 0, 0, 0)
         adj_top.addStretch(1)
-        self.expand_adjustments_btn = make_expand_table_button(self.adj_group, self._theme)
+        self.expand_adjustments_btn = make_expand_table_button(
+            adj_top_bar, self._theme
+        )
+        self.expand_adjustments_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         adj_top.addWidget(self.expand_adjustments_btn)
-        adj_tbl_layout.addLayout(adj_top)
+        adj_tbl_layout.addWidget(adj_top_bar)
+
         self.adjustments_table = QTableWidget(0, 9, self.adj_group)
         self.adjustments_table.setObjectName("WLSAdjustmentsTable")
         configure_dense_table(self.adjustments_table, stretch_last=True, editable=False)
-        self.adjustments_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.adjustments_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        adj_tbl_layout.addWidget(self.adjustments_table)
-        adj_layout.addWidget(self.adj_group, 1)
-        splitter.addWidget(adj_container)
+        self.adjustments_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.adjustments_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.adjustments_table.setMinimumHeight(240)
+        self.adjustments_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        adj_tbl_layout.addWidget(self.adjustments_table, 1)
+        body_layout.addWidget(self.adj_group, 3)
 
-        # Batch Summary
-        self.batch_group = QGroupBox(splitter)
+        # 5. Historical Batch Summary Group
+        self.batch_group = QGroupBox(scroll_content)
+        self.batch_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         batch_v = QVBoxLayout(self.batch_group)
-        batch_stats = QHBoxLayout()
-        self.batch_pass_lbl = QLabel(self.batch_group)
-        self.batch_warn_lbl = QLabel(self.batch_group)
-        self.batch_fail_lbl = QLabel(self.batch_group)
-        self.batch_skipped_lbl = QLabel(self.batch_group)
-        self.batch_mean_lbl = QLabel(self.batch_group)
+        batch_v.setSpacing(6)
+
+        batch_top_bar = QWidget(self.batch_group)
+        batch_top_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        batch_top_layout = QHBoxLayout(batch_top_bar)
+        batch_top_layout.setContentsMargins(0, 0, 0, 0)
+        batch_top_layout.setSpacing(8)
+
+        batch_stats_bar = QWidget(batch_top_bar)
+        batch_stats_bar.setAutoFillBackground(False)
+        batch_stats_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        batch_stats = FlowLayout(batch_stats_bar, margin=0, h_spacing=10, v_spacing=4)
+        self.batch_pass_lbl = QLabel(batch_stats_bar)
+        self.batch_warn_lbl = QLabel(batch_stats_bar)
+        self.batch_fail_lbl = QLabel(batch_stats_bar)
+        self.batch_skipped_lbl = QLabel(batch_stats_bar)
+        self.batch_mean_lbl = QLabel(batch_stats_bar)
         for lbl in (
             self.batch_pass_lbl,
             self.batch_warn_lbl,
@@ -319,30 +470,52 @@ class SolverResultsView(QWidget):
             self.batch_mean_lbl,
         ):
             lbl.setFont(monospace_font(9.0, bold=True))
+            lbl.setSizePolicy(
+                QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+            )
             batch_stats.addWidget(lbl)
-        batch_stats.addStretch(1)
-        self.expand_batch_btn = make_expand_table_button(self.batch_group, self._theme)
-        batch_stats.addWidget(self.expand_batch_btn)
-        batch_v.addLayout(batch_stats)
+
+        self.expand_batch_btn = make_expand_table_button(batch_top_bar, self._theme)
+        self.expand_batch_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        batch_top_layout.addWidget(batch_stats_bar, 1)
+        batch_top_layout.addWidget(
+            self.expand_batch_btn,
+            0,
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight,
+        )
+        batch_v.addWidget(batch_top_bar)
 
         self.batch_table = QTableWidget(0, 6, self.batch_group)
         self.batch_table.setObjectName("BatchSummaryTable")
         configure_dense_table(self.batch_table, stretch_last=True, editable=False)
-        self.batch_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        batch_v.addWidget(self.batch_table)
+        self.batch_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.batch_table.setMinimumHeight(220)
+        self.batch_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        batch_v.addWidget(self.batch_table, 1)
         self.batch_group.setVisible(False)
-        splitter.addWidget(self.batch_group)
+        body_layout.addWidget(self.batch_group, 2)
 
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        root.addWidget(splitter, 1)
+        self.scroll_area.setWidget(scroll_content)
+        root.addWidget(self.scroll_area, 1)
 
-        # Footer Navigation
+        # Fixed Footer Navigation
         footer = QHBoxLayout()
         footer.addStretch(1)
         self.prev_btn = QPushButton(self)
+        self.prev_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         self.next_btn = QPushButton(self)
         self.next_btn.setProperty("accent", True)
+        self.next_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         footer.addWidget(self.prev_btn)
         footer.addWidget(self.next_btn)
         root.addLayout(footer)

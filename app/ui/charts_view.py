@@ -10,14 +10,16 @@ os.environ.setdefault("MPLCONFIGDIR", str(tempfile.gettempdir()))
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSplitter,
+    QScrollArea,
+    QSizePolicy,
     QTabWidget,
     QTableWidget,
     QVBoxLayout,
@@ -30,6 +32,7 @@ from core.models import MeasurementPoint, ReconciliationResult, StepStatus, Stre
 
 from .flowsheet_canvas import FlowsheetCanvas
 from .ui_common import (
+    FlowLayout,
     InspectorPayload,
     ProjectState,
     TableInspectorDialog,
@@ -76,59 +79,99 @@ class ChartsView(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
-        # Header + period selector
+        # Fixed header + period selector
         hdr = QHBoxLayout()
+        hdr.setSpacing(6)
         self.header_title = QLabel(self)
         self.header_title.setFont(ui_font(11.0, bold=True))
+        self.header_title.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         self.period_lbl = QLabel(self)
+        self.period_lbl.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         self.period_combo = QComboBox(self)
         self.period_combo.setMinimumWidth(160)
+        self.period_combo.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         hdr.addWidget(self.header_title)
         hdr.addStretch(1)
         hdr.addWidget(self.period_lbl)
         hdr.addWidget(self.period_combo)
         root.addLayout(hdr)
 
-        splitter = QSplitter(Qt.Orientation.Vertical, self)
+        # Scrollable central body (prevents vertical crushing at 1366x768)
+        self.body_scroll = QScrollArea(self)
+        self.body_scroll.setObjectName("ChartsBodyScroll")
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.body_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self._body_container = QWidget(self.body_scroll)
+        self._body_container.setObjectName("ChartsBodyContainer")
+        body_layout = QVBoxLayout(self._body_container)
+        body_layout.setContentsMargins(0, 0, 4, 0)
+        body_layout.setSpacing(8)
 
         # KPIs Table Section
-        self.kpi_group = QGroupBox(splitter)
+        self.kpi_group = QGroupBox(self._body_container)
+        self.kpi_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         kpi_v = QVBoxLayout(self.kpi_group)
-        kpi_v.setSpacing(4)
+        kpi_v.setSpacing(6)
 
-        summary_row = QHBoxLayout()
-        self.feed_nom_lbl = QLabel(self.kpi_group)
-        self.feed_nom_val = QLabel("-", self.kpi_group)
-        self.feed_nom_val.setFont(monospace_font(9.5, bold=True))
-        self.feed_rec_lbl = QLabel(self.kpi_group)
-        self.feed_rec_val = QLabel("-", self.kpi_group)
-        self.feed_rec_val.setFont(monospace_font(9.5, bold=True))
-        self.unexp_mass_lbl = QLabel(self.kpi_group)
-        self.unexp_mass_val = QLabel("-", self.kpi_group)
-        self.unexp_mass_val.setFont(monospace_font(9.5, bold=True))
+        summary_row = FlowLayout(margin=0, h_spacing=12, v_spacing=6)
 
-        for lbl in (
-            self.feed_nom_lbl,
-            self.feed_nom_val,
-            self.feed_rec_lbl,
-            self.feed_rec_val,
-            self.unexp_mass_lbl,
-            self.unexp_mass_val,
-        ):
-            summary_row.addWidget(lbl)
-        summary_row.addStretch(1)
+        def _make_metric_pair() -> tuple[QWidget, QLabel, QLabel]:
+            box = QWidget(self.kpi_group)
+            box.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            box_l = QHBoxLayout(box)
+            box_l.setContentsMargins(0, 0, 0, 0)
+            box_l.setSpacing(4)
+            lbl = QLabel(box)
+            lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            val = QLabel("-", box)
+            val.setFont(monospace_font(9.5, bold=True))
+            val.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            box_l.addWidget(lbl)
+            box_l.addWidget(val)
+            return box, lbl, val
+
+        feed_nom_box, self.feed_nom_lbl, self.feed_nom_val = _make_metric_pair()
+        feed_rec_box, self.feed_rec_lbl, self.feed_rec_val = _make_metric_pair()
+        unexp_mass_box, self.unexp_mass_lbl, self.unexp_mass_val = _make_metric_pair()
+
         self.expand_kpi_btn = make_expand_table_button(self.kpi_group, self._theme)
+        self.expand_kpi_btn.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
+
+        summary_row.addWidget(feed_nom_box)
+        summary_row.addWidget(feed_rec_box)
+        summary_row.addWidget(unexp_mass_box)
         summary_row.addWidget(self.expand_kpi_btn)
         kpi_v.addLayout(summary_row)
 
         self.kpi_table = QTableWidget(0, 11, self.kpi_group)
         self.kpi_table.setObjectName("KPIReportTable")
         configure_dense_table(self.kpi_table, stretch_last=True, editable=False)
-        kpi_v.addWidget(self.kpi_table)
-        splitter.addWidget(self.kpi_group)
+        self.kpi_table.setMinimumHeight(230)
+        self.kpi_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        kpi_v.addWidget(self.kpi_table, 1)
+        body_layout.addWidget(self.kpi_group, 2)
 
         # 4 Integrated Visualization Tabs
-        self.tabs = QTabWidget(splitter)
+        self.tabs = QTabWidget(self._body_container)
+        self.tabs.setMinimumHeight(360)
+        self.tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         tb = self.tabs.tabBar()
         tb.setExpanding(False)
         tb.setElideMode(Qt.TextElideMode.ElideNone)
@@ -139,8 +182,15 @@ class ChartsView(QWidget):
         sk_layout = QVBoxLayout(sankey_tab)
         self.sankey_title_lbl = QLabel(sankey_tab)
         self.sankey_title_lbl.setFont(ui_font(9.5, bold=True))
+        self.sankey_title_lbl.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         self.sankey_canvas = FlowsheetCanvas(sankey_tab, interactive=False)
         self.sankey_canvas.setObjectName("Step06SankeyCanvas")
+        self.sankey_canvas.setMinimumHeight(280)
+        self.sankey_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         sk_layout.addWidget(self.sankey_title_lbl)
         sk_layout.addWidget(self.sankey_canvas, 1)
         self.tabs.addTab(sankey_tab, "")
@@ -150,6 +200,10 @@ class ChartsView(QWidget):
         p_layout = QVBoxLayout(parity_tab)
         self.parity_fig = Figure(figsize=(6.5, 4.0), dpi=100)
         self.parity_canvas = FigureCanvasQTAgg(self.parity_fig)
+        self.parity_canvas.setMinimumHeight(280)
+        self.parity_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         p_layout.addWidget(self.parity_canvas, 1)
         self.tabs.addTab(parity_tab, "")
 
@@ -158,6 +212,10 @@ class ChartsView(QWidget):
         a_layout = QVBoxLayout(adj_tab)
         self.adj_fig = Figure(figsize=(6.5, 4.0), dpi=100)
         self.adj_canvas = FigureCanvasQTAgg(self.adj_fig)
+        self.adj_canvas.setMinimumHeight(280)
+        self.adj_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         a_layout.addWidget(self.adj_canvas, 1)
         self.tabs.addTab(adj_tab, "")
 
@@ -165,8 +223,16 @@ class ChartsView(QWidget):
         trends_tab = QWidget(self.tabs)
         t_layout = QVBoxLayout(trends_tab)
         t_ctrl = QHBoxLayout()
+        t_ctrl.setSpacing(6)
         self.trend_sp_lbl = QLabel(trends_tab)
+        self.trend_sp_lbl.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         self.trend_sp_combo = QComboBox(trends_tab)
+        self.trend_sp_combo.setMinimumWidth(140)
+        self.trend_sp_combo.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         t_ctrl.addWidget(self.trend_sp_lbl)
         t_ctrl.addWidget(self.trend_sp_combo)
         t_ctrl.addStretch(1)
@@ -174,20 +240,31 @@ class ChartsView(QWidget):
 
         self.trends_fig = Figure(figsize=(6.5, 4.6), dpi=100)
         self.trends_canvas = FigureCanvasQTAgg(self.trends_fig)
+        self.trends_canvas.setMinimumHeight(280)
+        self.trends_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         t_layout.addWidget(self.trends_canvas, 1)
         self.tabs.addTab(trends_tab, "")
 
-        splitter.addWidget(self.tabs)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
-        root.addWidget(splitter, 1)
+        body_layout.addWidget(self.tabs, 3)
 
-        # Navigation footer
+        self.body_scroll.setWidget(self._body_container)
+        root.addWidget(self.body_scroll, 1)
+
+        # Fixed navigation footer
         footer = QHBoxLayout()
+        footer.setSpacing(6)
         footer.addStretch(1)
         self.prev_btn = QPushButton(self)
+        self.prev_btn.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         self.next_btn = QPushButton(self)
         self.next_btn.setProperty("accent", True)
+        self.next_btn.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         footer.addWidget(self.prev_btn)
         footer.addWidget(self.next_btn)
         root.addLayout(footer)
@@ -198,6 +275,11 @@ class ChartsView(QWidget):
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.prev_btn.clicked.connect(self.prev_step_requested.emit)
         self.next_btn.clicked.connect(self._on_next_clicked)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self.tabs.currentIndex() == 0:
+            QTimer.singleShot(0, self._fit_sankey_canvas)
 
     def _on_expand_kpi(self) -> None:
         dlg = TableInspectorDialog(

@@ -9,10 +9,13 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -34,6 +37,7 @@ from .ui_common import (
     InspectorPayload,
     ProjectState,
     apply_status_role,
+    autosize_table_headers,
     configure_dense_table,
     get_theme_palette,
     load_svg_icon,
@@ -69,51 +73,91 @@ class UncertaintyView(QWidget):
         self.retranslate_ui()
         self.refresh_from_state()
 
+    @staticmethod
+    def _lock_vertical_fixed(
+        widget: QWidget, h_policy: Optional[QSizePolicy.Policy] = None
+    ) -> None:
+        sp = widget.sizePolicy()
+        if h_policy is not None:
+            sp.setHorizontalPolicy(h_policy)
+        sp.setVerticalPolicy(QSizePolicy.Policy.Fixed)
+        widget.setSizePolicy(sp)
+
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
+        # Fixed Header
         self.header_title = QLabel(self)
         self.header_title.setFont(ui_font(11.0, bold=True))
+        self._lock_vertical_fixed(self.header_title, QSizePolicy.Policy.Ignored)
         root.addWidget(self.header_title)
 
+        # Scrollable Central Body
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.viewport().setAutoFillBackground(False)
+
+        body = QWidget()
+        body.setAutoFillBackground(False)
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 4, 0)
+        body_layout.setSpacing(8)
+        self.scroll_area.setWidget(body)
+
         # Controls Group
-        self.controls_group = QGroupBox(self)
+        self.controls_group = QGroupBox(body)
+        self.controls_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         ctrl_layout = FlowLayout(self.controls_group, margin=8, h_spacing=8, v_spacing=6)
 
         self.apply_amira_btn = QPushButton(self.controls_group)
         self.apply_amira_btn.setProperty("compact", True)
+        self._lock_vertical_fixed(self.apply_amira_btn, QSizePolicy.Policy.Minimum)
         self.estimate_empirical_btn = QPushButton(self.controls_group)
         self.estimate_empirical_btn.setProperty("compact", True)
+        self._lock_vertical_fixed(self.estimate_empirical_btn, QSizePolicy.Policy.Minimum)
 
         alpha_box = QWidget(self.controls_group)
+        alpha_box.setAutoFillBackground(False)
+        self._lock_vertical_fixed(alpha_box, QSizePolicy.Policy.Maximum)
         alpha_box_layout = QHBoxLayout(alpha_box)
         alpha_box_layout.setContentsMargins(0, 0, 0, 0)
         alpha_box_layout.setSpacing(6)
         self.alpha_lbl = QLabel(alpha_box)
+        self._lock_vertical_fixed(self.alpha_lbl)
         self.alpha_spin = QDoubleSpinBox(alpha_box)
         self.alpha_spin.setRange(0.001, 0.250)
         self.alpha_spin.setSingleStep(0.005)
         self.alpha_spin.setDecimals(3)
         self.alpha_spin.setValue(0.050)
         self.alpha_spin.setFont(monospace_font(9.5))
+        self._lock_vertical_fixed(self.alpha_spin, QSizePolicy.Policy.Fixed)
         alpha_box_layout.addWidget(self.alpha_lbl)
         alpha_box_layout.addWidget(self.alpha_spin)
 
         self.validate_sigma_btn = QPushButton(self.controls_group)
         self.validate_sigma_btn.setProperty("accent", True)
         self.validate_sigma_btn.setProperty("compact", True)
+        self._lock_vertical_fixed(self.validate_sigma_btn, QSizePolicy.Policy.Minimum)
 
         ctrl_layout.addWidget(self.apply_amira_btn)
         ctrl_layout.addWidget(self.estimate_empirical_btn)
         ctrl_layout.addWidget(alpha_box)
         ctrl_layout.addWidget(self.validate_sigma_btn)
-        root.addWidget(self.controls_group)
+        body_layout.addWidget(self.controls_group)
 
         # AMIRA P754 Industrial Reference Strip
-        self.preset_group = QGroupBox(self)
-        preset_layout = FlowLayout(self.preset_group, margin=8, h_spacing=12, v_spacing=4)
+        self.preset_group = QGroupBox(body)
+        self.preset_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        preset_layout = FlowLayout(self.preset_group, margin=8, h_spacing=12, v_spacing=6)
         self.preset_labels: list[tuple[str, QLabel]] = []
         for key in (
             "step03.preset_belt_weigher",
@@ -125,27 +169,41 @@ class UncertaintyView(QWidget):
         ):
             lbl = QLabel(self.preset_group)
             lbl.setProperty("role", "secondary")
+            self._lock_vertical_fixed(lbl)
             preset_layout.addWidget(lbl)
             self.preset_labels.append((key, lbl))
-        root.addWidget(self.preset_group)
+        body_layout.addWidget(self.preset_group)
 
         # Uncertainty Matrix Table
-        self.sigma_table = QTableWidget(0, 6, self)
+        self.sigma_table = QTableWidget(0, 6, body)
         self.sigma_table.setObjectName("UncertaintyMatrixTable")
         configure_dense_table(
             self.sigma_table, stretch_last=True, editable=True, has_embedded_widgets=True
         )
-        root.addWidget(self.sigma_table, 1)
+        self.sigma_table.setMinimumHeight(240)
+        self.sigma_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        body_layout.addWidget(self.sigma_table, 1)
 
-        # Footer banner + nav
+        root.addWidget(self.scroll_area, 1)
+
+        # Fixed Footer banner + nav
         footer = QHBoxLayout()
+        footer.setSpacing(8)
         self.status_banner = QLabel(self)
+        self.status_banner.setWordWrap(True)
         self.status_banner.setContentsMargins(8, 5, 8, 5)
+        self.status_banner.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+        )
         apply_status_role(self.status_banner, "pending")
         footer.addWidget(self.status_banner, 1)
 
         self.prev_btn = QPushButton(self)
+        self._lock_vertical_fixed(self.prev_btn, QSizePolicy.Policy.Fixed)
         self.next_btn = QPushButton(self)
+        self._lock_vertical_fixed(self.next_btn, QSizePolicy.Policy.Fixed)
         footer.addWidget(self.prev_btn)
         footer.addWidget(self.next_btn)
         root.addLayout(footer)
@@ -310,6 +368,7 @@ class UncertaintyView(QWidget):
                 )
         finally:
             self._syncing = False
+        autosize_table_headers(self.sigma_table, stretch_last=True)
 
     def _on_mode_changed(self, var_key: str, cb: QComboBox) -> None:
         if self._syncing or self._working_model is None:

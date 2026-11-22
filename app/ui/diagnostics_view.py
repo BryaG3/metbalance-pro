@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QPushButton,
-    QSplitter,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -25,6 +26,7 @@ from core.models import ObservabilityReport, StepStatus, VariableClass
 from core.observability import analyze_observability
 
 from .ui_common import (
+    FlowLayout,
     InspectorPayload,
     ProjectState,
     TableInspectorDialog,
@@ -71,26 +73,70 @@ class DiagnosticsView(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
+        # Fixed Header
         self.header_title = QLabel(self)
         self.header_title.setFont(ui_font(11.0, bold=True))
+        self.header_title.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         root.addWidget(self.header_title)
 
-        # Control bar
-        ctrl_row = QHBoxLayout()
-        self.period_lbl = QLabel(self)
-        self.period_combo = QComboBox(self)
-        self.period_combo.setMinimumWidth(180)
-        self.run_diagnostics_btn = QPushButton(self)
-        self.run_diagnostics_btn.setProperty("accent", True)
+        # Scrollable Central Body
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.scroll_area.viewport().setAutoFillBackground(False)
 
-        ctrl_row.addWidget(self.period_lbl)
-        ctrl_row.addWidget(self.period_combo)
+        scroll_content = QWidget(self.scroll_area)
+        body_layout = QVBoxLayout(scroll_content)
+        body_layout.setContentsMargins(0, 0, 4, 0)
+        body_layout.setSpacing(8)
+
+        # Control bar (wrapping FlowLayout to prevent crowding at 1366x768)
+        ctrl_bar = QWidget(scroll_content)
+        ctrl_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        ctrl_row = FlowLayout(ctrl_bar, margin=0, h_spacing=6, v_spacing=6)
+
+        period_box = QWidget(ctrl_bar)
+        period_box.setAutoFillBackground(False)
+        period_box.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
+        period_box_layout = QHBoxLayout(period_box)
+        period_box_layout.setContentsMargins(0, 0, 0, 0)
+        period_box_layout.setSpacing(6)
+        self.period_lbl = QLabel(period_box)
+        self.period_combo = QComboBox(period_box)
+        self.period_combo.setMinimumWidth(180)
+        self.period_combo.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        period_box_layout.addWidget(self.period_lbl)
+        period_box_layout.addWidget(self.period_combo)
+
+        self.run_diagnostics_btn = QPushButton(ctrl_bar)
+        self.run_diagnostics_btn.setProperty("accent", True)
+        self.run_diagnostics_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+
+        ctrl_row.addWidget(period_box)
         ctrl_row.addWidget(self.run_diagnostics_btn)
-        ctrl_row.addStretch(1)
-        root.addLayout(ctrl_row)
+        body_layout.addWidget(ctrl_bar)
 
         # QR / DOF Metric Cards
-        self.summary_group = QGroupBox(self)
+        self.summary_group = QGroupBox(scroll_content)
+        self.summary_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         cards_grid = QGridLayout(self.summary_group)
         cards_grid.setSpacing(6)
 
@@ -109,6 +155,9 @@ class DiagnosticsView(QWidget):
         for idx, key in enumerate(metric_keys):
             card = QFrame(self.summary_group)
             card.setProperty("card", True)
+            card.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
             c_layout = QVBoxLayout(card)
             c_layout.setContentsMargins(8, 5, 8, 5)
             c_layout.setSpacing(2)
@@ -116,70 +165,120 @@ class DiagnosticsView(QWidget):
             title_lbl = QLabel(card)
             title_lbl.setProperty("role", "secondary")
             title_lbl.setFont(ui_font(8.0))
+            title_lbl.setWordWrap(True)
             val_lbl = QLabel("-", card)
             val_lbl.setFont(monospace_font(11.0, bold=True))
-            val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            val_lbl.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             c_layout.addWidget(title_lbl)
             c_layout.addWidget(val_lbl)
             cards_grid.addWidget(card, idx // 5, idx % 5)
             self._metric_cards[key] = (title_lbl, val_lbl)
 
-        root.addWidget(self.summary_group)
+        body_layout.addWidget(self.summary_group)
 
         # Explicit Guardrail Banner + Missing Hints
-        self.guardrail_banner = QLabel(self)
+        self.guardrail_banner = QLabel(scroll_content)
         self.guardrail_banner.setWordWrap(True)
         self.guardrail_banner.setContentsMargins(8, 6, 8, 6)
+        self.guardrail_banner.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         apply_status_role(self.guardrail_banner, "pending")
-        root.addWidget(self.guardrail_banner)
+        body_layout.addWidget(self.guardrail_banner)
 
-        self.hints_group = QGroupBox(self)
+        self.hints_group = QGroupBox(scroll_content)
+        self.hints_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         hints_layout = QVBoxLayout(self.hints_group)
         self.hints_list = QListWidget(self.hints_group)
-        self.hints_list.setMaximumHeight(90)
+        self.hints_list.setMinimumHeight(90)
+        self.hints_list.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         hints_layout.addWidget(self.hints_list)
         self.hints_group.setVisible(False)
-        root.addWidget(self.hints_group)
+        body_layout.addWidget(self.hints_group)
 
-        # Tables Splitter
-        splitter = QSplitter(Qt.Orientation.Vertical, self)
-
-        self.vars_group = QGroupBox(splitter)
+        # Variable Classification Table Group
+        self.vars_group = QGroupBox(scroll_content)
+        self.vars_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         v_layout = QVBoxLayout(self.vars_group)
-        v_top = QHBoxLayout()
+        v_layout.setSpacing(6)
+        v_top_bar = QWidget(self.vars_group)
+        v_top_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        v_top = QHBoxLayout(v_top_bar)
+        v_top.setContentsMargins(0, 0, 0, 0)
         v_top.addStretch(1)
-        self.expand_obs_btn = make_expand_table_button(self.vars_group, self._theme)
+        self.expand_obs_btn = make_expand_table_button(v_top_bar, self._theme)
+        self.expand_obs_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         v_top.addWidget(self.expand_obs_btn)
-        v_layout.addLayout(v_top)
+        v_layout.addWidget(v_top_bar)
+
         self.vars_table = QTableWidget(0, 5, self.vars_group)
         self.vars_table.setObjectName("ObservabilityVarsTable")
         configure_dense_table(self.vars_table, stretch_last=True, editable=False)
-        v_layout.addWidget(self.vars_table)
-        splitter.addWidget(self.vars_group)
+        self.vars_table.setMinimumHeight(220)
+        self.vars_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        v_layout.addWidget(self.vars_table, 1)
+        body_layout.addWidget(self.vars_group, 3)
 
-        self.nodal_group = QGroupBox(splitter)
+        # Nodal Imbalances Table Group
+        self.nodal_group = QGroupBox(scroll_content)
+        self.nodal_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         n_layout = QVBoxLayout(self.nodal_group)
-        n_top = QHBoxLayout()
+        n_layout.setSpacing(6)
+        n_top_bar = QWidget(self.nodal_group)
+        n_top_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        n_top = QHBoxLayout(n_top_bar)
+        n_top.setContentsMargins(0, 0, 0, 0)
         n_top.addStretch(1)
-        self.expand_nodal_btn = make_expand_table_button(self.nodal_group, self._theme)
+        self.expand_nodal_btn = make_expand_table_button(n_top_bar, self._theme)
+        self.expand_nodal_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         n_top.addWidget(self.expand_nodal_btn)
-        n_layout.addLayout(n_top)
+        n_layout.addWidget(n_top_bar)
+
         self.nodal_table = QTableWidget(0, 6, self.nodal_group)
         self.nodal_table.setObjectName("NodalImbalanceTable")
         configure_dense_table(self.nodal_table, stretch_last=True, editable=False)
-        n_layout.addWidget(self.nodal_table)
-        splitter.addWidget(self.nodal_group)
+        self.nodal_table.setMinimumHeight(220)
+        self.nodal_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        n_layout.addWidget(self.nodal_table, 1)
+        body_layout.addWidget(self.nodal_group, 2)
 
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        root.addWidget(splitter, 1)
+        self.scroll_area.setWidget(scroll_content)
+        root.addWidget(self.scroll_area, 1)
 
-        # Footer Navigation
+        # Fixed Footer Navigation
         footer = QHBoxLayout()
         footer.addStretch(1)
         self.prev_btn = QPushButton(self)
+        self.prev_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         self.next_btn = QPushButton(self)
         self.next_btn.setProperty("accent", True)
+        self.next_btn.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         footer.addWidget(self.prev_btn)
         footer.addWidget(self.next_btn)
         root.addLayout(footer)

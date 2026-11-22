@@ -226,19 +226,23 @@ def _p(text: Any, style: ParagraphStyle) -> Paragraph:
     return Paragraph(xml_escape(str(text)), style)
 
 
-def _rl_image_from_png_buf(buf: io.BytesIO, max_w: float, max_h: float) -> RLImage:
+def _rl_image_from_png_buf(buf: io.BytesIO, target_width: float, max_height: float) -> RLImage:
     """Create a ReportLab Image preserving the exact rendered PNG aspect ratio."""
     buf.seek(0)
     with PILImage.open(buf) as pil_img:
-        orig_w, orig_h = pil_img.size
+        px_w, px_h = pil_img.size
     buf.seek(0)
-    if orig_w > 0 and orig_h > 0:
-        scale = min(max_w / float(orig_w), max_h / float(orig_h))
-        width = orig_w * scale
-        height = orig_h * scale
+    if px_w > 0 and px_h > 0:
+        height = target_width * (float(px_h) / float(px_w))
+        if height > max_height:
+            scale = min(target_width / float(px_w), max_height / float(px_h))
+            width = px_w * scale
+            height = px_h * scale
+        else:
+            width = target_width
     else:
-        width, height = max_w, max_h
-    return RLImage(buf, width=width, height=height)
+        width, height = target_width, max_height
+    return RLImage(buf, width=width, height=height, hAlign="CENTER")
 
 
 def _render_parity_png(
@@ -247,9 +251,10 @@ def _render_parity_png(
     primary_hex: str,
 ) -> io.BytesIO:
     """Render 300 DPI Parity Plot (Measured vs Reconciled normalized by sigma) via Agg."""
-    fig = Figure(figsize=(6.4, 3.6), dpi=300)
+    fig = Figure(figsize=(6.4, 3.6), dpi=300, facecolor="white")
     FigureCanvasAgg(fig)
     ax = fig.add_subplot(111)
+    ax.set_facecolor("white")
 
     measured_norm: list[float] = []
     reconciled_norm: list[float] = []
@@ -296,16 +301,22 @@ def _render_parity_png(
                 zorder=4,
             )
 
-    ax.set_title(i18n.t("step06.charts.parity_title", period=result.period_id), fontsize=9.5, fontweight="bold", color="#1E293B")
-    ax.set_xlabel(i18n.t("step06.charts.parity_x"), fontsize=8, color="#334155")
-    ax.set_ylabel(i18n.t("step06.charts.parity_y"), fontsize=8, color="#334155")
+    ax.set_title(
+        i18n.t("step06.charts.parity_title", period=result.period_id),
+        fontsize=9.5,
+        fontweight="bold",
+        color="#1E293B",
+        pad=12,
+    )
+    ax.set_xlabel(i18n.t("step06.charts.parity_x"), fontsize=8, color="#334155", labelpad=8)
+    ax.set_ylabel(i18n.t("step06.charts.parity_y"), fontsize=8, color="#334155", labelpad=6)
     ax.tick_params(labelsize=7.5, colors="#475569")
     ax.grid(True, linestyle=":", alpha=0.5, color="#CBD5E1")
     ax.legend(fontsize=7, frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1")
-    fig.tight_layout(pad=1.4)
+    fig.subplots_adjust(left=0.12, right=0.97, top=0.88, bottom=0.18)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight", pad_inches=0.18)
+    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight", pad_inches=0.25, facecolor="white")
     buf.seek(0)
     return buf
 
@@ -315,9 +326,10 @@ def _render_adjustments_png(
     i18n: I18nManager,
 ) -> io.BytesIO:
     """Render 300 DPI Relative Adjustments (%) bar chart colored by |z| severity."""
-    fig = Figure(figsize=(6.4, 3.6), dpi=300)
+    fig = Figure(figsize=(6.4, 3.8), dpi=300, facecolor="white")
     FigureCanvasAgg(fig)
     ax = fig.add_subplot(111)
+    ax.set_facecolor("white")
 
     labels: list[str] = []
     pcts: list[float] = []
@@ -345,14 +357,20 @@ def _render_adjustments_png(
         ax.set_xticks(x_pos)
         ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=6.2, color="#334155")
 
-    ax.set_title(i18n.t("step06.charts.adj_title", period=result.period_id), fontsize=9.5, fontweight="bold", color="#1E293B")
-    ax.set_ylabel(i18n.t("step06.charts.adj_y"), fontsize=8, color="#334155")
+    ax.set_title(
+        i18n.t("step06.charts.adj_title", period=result.period_id),
+        fontsize=9.5,
+        fontweight="bold",
+        color="#1E293B",
+        pad=12,
+    )
+    ax.set_ylabel(i18n.t("step06.charts.adj_y"), fontsize=8, color="#334155", labelpad=6)
     ax.tick_params(axis="y", labelsize=7.5, colors="#475569")
     ax.grid(True, axis="y", linestyle=":", alpha=0.5, color="#CBD5E1")
-    fig.tight_layout(pad=1.4)
+    fig.subplots_adjust(left=0.12, right=0.97, top=0.88, bottom=0.28)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight", pad_inches=0.18)
+    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight", pad_inches=0.25, facecolor="white")
     buf.seek(0)
     return buf
 
@@ -363,9 +381,10 @@ def _render_chi2_control_png(
     primary_hex: str,
 ) -> io.BytesIO:
     """Render 300 DPI Chi2 Statistical Control Chart across valid batch periods (excluding NO_FLOW)."""
-    fig = Figure(figsize=(6.4, 3.2), dpi=300)
+    fig = Figure(figsize=(6.4, 3.5), dpi=300, facecolor="white")
     FigureCanvasAgg(fig)
     ax = fig.add_subplot(111)
+    ax.set_facecolor("white")
 
     valid_results = [r for r in batch_result.results if not _is_skipped_result(r)]
     periods = [r.period_id for r in valid_results]
@@ -388,15 +407,21 @@ def _render_chi2_control_png(
         ax.set_xticklabels(periods[::step], rotation=40, ha="right", fontsize=6.8, color="#334155")
         ax.legend(fontsize=7, frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1")
 
-    ax.set_title(i18n.t("step06.charts.trends_chi2_title"), fontsize=9.5, fontweight="bold", color="#1E293B")
-    ax.set_xlabel(i18n.t("step06.charts.trends_chi2_x"), fontsize=8, color="#334155")
-    ax.set_ylabel(i18n.t("step06.charts.trends_chi2_y"), fontsize=8, color="#334155")
+    ax.set_title(
+        i18n.t("step06.charts.trends_chi2_title"),
+        fontsize=9.5,
+        fontweight="bold",
+        color="#1E293B",
+        pad=12,
+    )
+    ax.set_xlabel(i18n.t("step06.charts.trends_chi2_x"), fontsize=8, color="#334155", labelpad=8)
+    ax.set_ylabel(i18n.t("step06.charts.trends_chi2_y"), fontsize=8, color="#334155", labelpad=6)
     ax.tick_params(axis="y", labelsize=7.5, colors="#475569")
     ax.grid(True, linestyle=":", alpha=0.5, color="#CBD5E1")
-    fig.tight_layout(pad=1.4)
+    fig.subplots_adjust(left=0.12, right=0.97, top=0.88, bottom=0.24)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight", pad_inches=0.18)
+    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight", pad_inches=0.25, facecolor="white")
     buf.seek(0)
     return buf
 
@@ -836,16 +861,17 @@ def export_to_pdf(
     story.append(PageBreak())
     story.append(Paragraph(i18n.t("report.pdf_charts_section"), section_style))
 
+    chart_target_w = usable_w * 0.94
     parity_buf = _render_parity_png(reconciliation_result, i18n, primary_hex)
     adj_buf = _render_adjustments_png(reconciliation_result, i18n)
-    story.append(_rl_image_from_png_buf(parity_buf, usable_w * 0.94, usable_w * 0.94 * 3.8 / 6.4))
-    story.append(Spacer(1, 5))
-    story.append(_rl_image_from_png_buf(adj_buf, usable_w * 0.94, usable_w * 0.94 * 3.8 / 6.4))
+    story.append(_rl_image_from_png_buf(parity_buf, chart_target_w, 108 * mm))
+    story.append(Spacer(1, 6))
+    story.append(_rl_image_from_png_buf(adj_buf, chart_target_w, 118 * mm))
 
     if batch_result is not None and any(not _is_skipped_result(r) for r in batch_result.results):
-        story.append(Spacer(1, 5))
+        story.append(Spacer(1, 6))
         chi_buf = _render_chi2_control_png(batch_result, i18n, primary_hex)
-        story.append(_rl_image_from_png_buf(chi_buf, usable_w * 0.94, usable_w * 0.94 * 3.5 / 6.4))
+        story.append(_rl_image_from_png_buf(chi_buf, chart_target_w, 112 * mm))
 
     # Section 7: AMIRA P754 Traceability & Audit Seal
     story.append(Paragraph(i18n.t("report.pdf_traceability_section"), section_style))
